@@ -22,8 +22,9 @@ type VarAssign struct {
 type AssignOp int
 
 const (
-	OpSet    AssignOp = iota // =
-	OpAppend                 // +=
+	OpSet     AssignOp = iota // =
+	OpAppend                  // +=
+	OpCondSet                 // ?=
 )
 
 // Rule represents a build rule: targets: prerequisites \n recipe.

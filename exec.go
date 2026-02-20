@@ -15,15 +15,19 @@ type Executor struct {
 	vars    *Vars
 	built   map[string]bool
 	verbose bool
+	force   bool // -B: unconditional rebuild
+	dryRun  bool // -n: print commands without executing
 }
 
-func NewExecutor(graph *Graph, state *BuildState, vars *Vars, verbose bool) *Executor {
+func NewExecutor(graph *Graph, state *BuildState, vars *Vars, verbose, force, dryRun bool) *Executor {
 	return &Executor{
 		graph:   graph,
 		state:   state,
 		vars:    vars,
 		built:   make(map[string]bool),
 		verbose: verbose,
+		force:   force,
+		dryRun:  dryRun,
 	}
 }
 
@@ -53,7 +57,7 @@ func (e *Executor) Build(target string) error {
 
 	// Check staleness
 	recipeText := e.expandRecipe(rule, target)
-	if !rule.isTask && !e.state.IsStale(target, rule.prereqs, recipeText) {
+	if !rule.isTask && !e.force && !e.state.IsStale(target, rule.prereqs, recipeText) {
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "mk: %q is up to date\n", target)
 		}
@@ -64,14 +68,24 @@ func (e *Executor) Build(target string) error {
 	if !rule.isTask {
 		dir := filepath.Dir(target)
 		if dir != "." && dir != "" {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return fmt.Errorf("creating directory %q: %w", dir, err)
+			if !e.dryRun {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return fmt.Errorf("creating directory %q: %w", dir, err)
+				}
 			}
 		}
 	}
 
 	// Execute recipe
 	fmt.Fprintf(os.Stderr, "mk: building %q\n", target)
+	if e.verbose || e.dryRun {
+		for _, line := range strings.Split(recipeText, "\n") {
+			fmt.Fprintf(os.Stderr, "  %s\n", line)
+		}
+	}
+	if e.dryRun {
+		return nil
+	}
 	if err := e.runRecipe(recipeText); err != nil {
 		// Delete partial output on failure (for file targets)
 		if !rule.isTask {
@@ -106,6 +120,11 @@ func (e *Executor) expandRecipe(rule *resolvedRule, target string) string {
 		vars.Set("input", rule.prereqs[0])
 	}
 	vars.Set("inputs", strings.Join(rule.prereqs, " "))
+
+	// Set stem if available from pattern match
+	if rule.stem != "" {
+		vars.Set("stem", rule.stem)
+	}
 
 	// Find changed prerequisites
 	var changed []string

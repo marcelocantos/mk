@@ -19,6 +19,35 @@ type resolvedRule struct {
 	prereqs []string
 	recipe  []string
 	isTask  bool
+	stem    string // first capture value from pattern match
+}
+
+// WhyRebuild returns human-readable reasons why the target needs rebuilding,
+// or nil if it is up to date.
+func (g *Graph) WhyRebuild(target string) ([]string, error) {
+	rule, err := g.Resolve(target)
+	if err != nil {
+		return nil, err
+	}
+	if len(rule.recipe) == 0 {
+		return nil, nil
+	}
+	vars := g.vars.Clone()
+	vars.Set("target", target)
+	if len(rule.prereqs) > 0 {
+		vars.Set("input", rule.prereqs[0])
+	}
+	vars.Set("inputs", strings.Join(rule.prereqs, " "))
+	var lines []string
+	for _, line := range rule.recipe {
+		l := line
+		for len(l) > 0 && (l[0] == '@' || l[0] == '-') {
+			l = l[1:]
+		}
+		lines = append(lines, vars.Expand(l))
+	}
+	recipeText := strings.Join(lines, "\n")
+	return g.state.WhyStale(target, rule.prereqs, recipeText), nil
 }
 
 type patternRule struct {
@@ -66,6 +95,10 @@ func (g *Graph) evalNode(node Node) error {
 			}
 		case OpAppend:
 			g.vars.Append(n.Name, g.vars.Expand(n.Value))
+		case OpCondSet:
+			if g.vars.Get(n.Name) == "" {
+				g.vars.Set(n.Name, value)
+			}
 		}
 
 	case Rule:
@@ -186,10 +219,17 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 				recipe = append(recipe, expanded)
 			}
 
+			// Use the first capture value as stem
+			var stem string
+			if len(tp.Captures) > 0 {
+				stem = captures[tp.Captures[0]]
+			}
+
 			r := &resolvedRule{
 				target:  target,
 				prereqs: prereqs,
 				recipe:  recipe,
+				stem:    stem,
 			}
 			return r, nil
 		}

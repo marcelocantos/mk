@@ -10,13 +10,24 @@ import (
 // Parse parses an mkfile from a reader.
 func Parse(r io.Reader) (*File, error) {
 	// Read all lines upfront so we can peek/backtrack.
-	var lines []string
+	var rawLines []string
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+		rawLines = append(rawLines, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
+	}
+
+	// Join line continuations: lines ending with \ are merged with the next.
+	var lines []string
+	for i := 0; i < len(rawLines); i++ {
+		line := rawLines[i]
+		for strings.HasSuffix(line, "\\") && i+1 < len(rawLines) {
+			line = line[:len(line)-1] + rawLines[i+1]
+			i++
+		}
+		lines = append(lines, line)
 	}
 
 	p := &parser{lines: lines}
@@ -118,6 +129,9 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 	if name, value, ok := parseAppend(trimmed); ok {
 		return VarAssign{Name: name, Op: OpAppend, Value: value, Line: lineNum}, nil
 	}
+	if name, value, ok := parseCondAssign(trimmed); ok {
+		return VarAssign{Name: name, Op: OpCondSet, Value: value, Line: lineNum}, nil
+	}
 
 	// Rule or task
 	if isTask, targets, prereqs, ok := parseRuleHeader(trimmed); ok {
@@ -191,7 +205,7 @@ func (p *parser) parseConditional(line string, lineNum int) (Node, error) {
 
 func parseAssign(line string) (string, string, bool) {
 	for i := 0; i < len(line); i++ {
-		if line[i] == '=' && (i == 0 || line[i-1] != '+' && line[i-1] != '!') {
+		if line[i] == '=' && (i == 0 || line[i-1] != '+' && line[i-1] != '!' && line[i-1] != '?') {
 			prefix := line[:i]
 			if strings.ContainsRune(prefix, ':') {
 				return "", "", false
@@ -203,6 +217,23 @@ func parseAssign(line string) (string, string, bool) {
 			}
 			return "", "", false
 		}
+	}
+	return "", "", false
+}
+
+func parseCondAssign(line string) (string, string, bool) {
+	idx := strings.Index(line, "?=")
+	if idx < 0 {
+		return "", "", false
+	}
+	prefix := line[:idx]
+	if strings.ContainsRune(prefix, ':') {
+		return "", "", false
+	}
+	name := strings.TrimSpace(prefix)
+	value := strings.TrimSpace(line[idx+2:])
+	if isValidVarName(name) {
+		return name, value, true
 	}
 	return "", "", false
 }

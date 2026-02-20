@@ -2,6 +2,9 @@ package mk
 
 import (
 	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -62,6 +65,8 @@ func (v *Vars) Get(name string) string {
 // Expand expands variable references in a string.
 // $name expands to the value of name.
 // ${name} also works for delimiting.
+// $name.dir / $name.file — path property access.
+// $[func args] — built-in mk functions.
 // $$ expands to a literal $.
 func (v *Vars) Expand(s string) string {
 	var b strings.Builder
@@ -97,12 +102,12 @@ func (v *Vars) Expand(s string) string {
 				i += end + 1
 			}
 
-		case s[i] == '(':
-			// $(func args) — built-in functions
-			end := findMatchingParen(s[i:])
+		case s[i] == '[':
+			// $[func args] — mk built-in functions
+			end := findMatchingBracket(s[i:])
 			if end < 0 {
 				b.WriteByte('$')
-				b.WriteByte('(')
+				b.WriteByte('[')
 				i++
 			} else {
 				inner := s[i+1 : i+end]
@@ -111,13 +116,28 @@ func (v *Vars) Expand(s string) string {
 			}
 
 		case isIdentStart(s[i]):
-			// $name or $name:old=new (substitution reference)
+			// $name, $name.prop, or $name:old=new (substitution reference)
 			start := i
 			for i < len(s) && isIdentCont(s[i]) {
 				i++
 			}
 			name := s[start:i]
 			val := v.Get(name)
+
+			// Check for property access: $name.dir, $name.file
+			if i < len(s) && s[i] == '.' {
+				propStart := i + 1
+				for i+1 < len(s) && isIdentCont(s[i+1]) {
+					i++
+				}
+				if propStart <= len(s) {
+					prop := s[propStart : i+1]
+					i++ // consume past property
+					val = varProperty(val, prop)
+					b.WriteString(val)
+					continue
+				}
+			}
 
 			// Check for substitution reference: $name:old=new
 			if i < len(s) && s[i] == ':' {
@@ -156,6 +176,18 @@ func (v *Vars) Expand(s string) string {
 	return b.String()
 }
 
+// varProperty returns a property of a variable value.
+func varProperty(val, prop string) string {
+	switch prop {
+	case "dir":
+		return filepath.Dir(val)
+	case "file":
+		return filepath.Base(val)
+	default:
+		return ""
+	}
+}
+
 // Environ returns the variables as environment strings for exec.
 func (v *Vars) Environ() []string {
 	var env []string
@@ -189,9 +221,38 @@ func (v *Vars) evalFunc(inner string) string {
 		return v.funcShell(strings.TrimSpace(args))
 	case "patsubst":
 		return v.funcPatsubst(strings.TrimSpace(args))
+	case "subst":
+		return v.funcSubst(strings.TrimSpace(args))
+	case "filter":
+		return v.funcFilter(strings.TrimSpace(args))
+	case "filter-out":
+		return v.funcFilterOut(strings.TrimSpace(args))
+	case "dir":
+		return v.funcDir(strings.TrimSpace(args))
+	case "notdir":
+		return v.funcNotdir(strings.TrimSpace(args))
+	case "basename":
+		return v.funcBasename(strings.TrimSpace(args))
+	case "suffix":
+		return v.funcSuffix(strings.TrimSpace(args))
+	case "addprefix":
+		return v.funcAddprefix(strings.TrimSpace(args))
+	case "addsuffix":
+		return v.funcAddsuffix(strings.TrimSpace(args))
+	case "sort":
+		return v.funcSort(strings.TrimSpace(args))
+	case "word":
+		return v.funcWord(strings.TrimSpace(args))
+	case "words":
+		return v.funcWords(strings.TrimSpace(args))
+	case "strip":
+		return v.funcStrip(strings.TrimSpace(args))
+	case "findstring":
+		return v.funcFindstring(strings.TrimSpace(args))
+	case "if":
+		return v.funcIf(strings.TrimSpace(args))
 	default:
-		// Unknown function, try as variable name
-		return v.Get(inner)
+		return ""
 	}
 }
 
@@ -216,7 +277,7 @@ func (v *Vars) funcShell(cmd string) string {
 }
 
 func (v *Vars) funcPatsubst(args string) string {
-	// $(patsubst pattern,replacement,text)
+	// $[patsubst pattern,replacement,text]
 	parts := strings.SplitN(args, ",", 3)
 	if len(parts) != 3 {
 		return ""
@@ -231,6 +292,212 @@ func (v *Vars) funcPatsubst(args string) string {
 		result = append(result, patsubstWord(pattern, replacement, w))
 	}
 	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcSubst(args string) string {
+	// $[subst from,to,text]
+	parts := strings.SplitN(args, ",", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	from := strings.TrimSpace(parts[0])
+	to := strings.TrimSpace(parts[1])
+	text := strings.TrimSpace(v.Expand(parts[2]))
+	return strings.ReplaceAll(text, from, to)
+}
+
+func (v *Vars) funcFilter(args string) string {
+	// $[filter pattern,text]
+	parts := strings.SplitN(args, ",", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	pattern := strings.TrimSpace(parts[0])
+	text := strings.TrimSpace(v.Expand(parts[1]))
+	var result []string
+	for _, w := range strings.Fields(text) {
+		if patsubstMatch(pattern, w) {
+			result = append(result, w)
+		}
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcFilterOut(args string) string {
+	// $[filter-out pattern,text]
+	parts := strings.SplitN(args, ",", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	pattern := strings.TrimSpace(parts[0])
+	text := strings.TrimSpace(v.Expand(parts[1]))
+	var result []string
+	for _, w := range strings.Fields(text) {
+		if !patsubstMatch(pattern, w) {
+			result = append(result, w)
+		}
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcDir(args string) string {
+	// $[dir names...]
+	text := v.Expand(args)
+	words := strings.Fields(text)
+	var result []string
+	for _, w := range words {
+		d := filepath.Dir(w)
+		if d == "." {
+			result = append(result, "./")
+		} else {
+			result = append(result, d+"/")
+		}
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcNotdir(args string) string {
+	// $[notdir names...]
+	text := v.Expand(args)
+	words := strings.Fields(text)
+	var result []string
+	for _, w := range words {
+		result = append(result, filepath.Base(w))
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcBasename(args string) string {
+	// $[basename names...]
+	text := v.Expand(args)
+	words := strings.Fields(text)
+	var result []string
+	for _, w := range words {
+		ext := filepath.Ext(w)
+		result = append(result, w[:len(w)-len(ext)])
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcSuffix(args string) string {
+	// $[suffix names...]
+	text := v.Expand(args)
+	words := strings.Fields(text)
+	var result []string
+	for _, w := range words {
+		ext := filepath.Ext(w)
+		if ext != "" {
+			result = append(result, ext)
+		}
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcAddprefix(args string) string {
+	// $[addprefix prefix,names]
+	parts := strings.SplitN(args, ",", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	prefix := strings.TrimSpace(parts[0])
+	text := strings.TrimSpace(v.Expand(parts[1]))
+	words := strings.Fields(text)
+	var result []string
+	for _, w := range words {
+		result = append(result, prefix+w)
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcAddsuffix(args string) string {
+	// $[addsuffix suffix,names]
+	parts := strings.SplitN(args, ",", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	suffix := strings.TrimSpace(parts[0])
+	text := strings.TrimSpace(v.Expand(parts[1]))
+	words := strings.Fields(text)
+	var result []string
+	for _, w := range words {
+		result = append(result, w+suffix)
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcSort(args string) string {
+	// $[sort list] — sort and deduplicate
+	text := v.Expand(args)
+	words := strings.Fields(text)
+	sort.Strings(words)
+	// Deduplicate
+	var result []string
+	for i, w := range words {
+		if i == 0 || w != words[i-1] {
+			result = append(result, w)
+		}
+	}
+	return strings.Join(result, " ")
+}
+
+func (v *Vars) funcWord(args string) string {
+	// $[word n,text] — 1-indexed
+	parts := strings.SplitN(args, ",", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || n < 1 {
+		return ""
+	}
+	text := strings.TrimSpace(v.Expand(parts[1]))
+	words := strings.Fields(text)
+	if n > len(words) {
+		return ""
+	}
+	return words[n-1]
+}
+
+func (v *Vars) funcWords(args string) string {
+	// $[words text] — count of words
+	text := v.Expand(args)
+	return strconv.Itoa(len(strings.Fields(text)))
+}
+
+func (v *Vars) funcStrip(args string) string {
+	// $[strip text] — normalize whitespace
+	text := v.Expand(args)
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func (v *Vars) funcFindstring(args string) string {
+	// $[findstring find,in]
+	parts := strings.SplitN(args, ",", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	find := strings.TrimSpace(parts[0])
+	text := strings.TrimSpace(v.Expand(parts[1]))
+	if strings.Contains(text, find) {
+		return find
+	}
+	return ""
+}
+
+func (v *Vars) funcIf(args string) string {
+	// $[if condition,then-val,else-val]
+	parts := strings.SplitN(args, ",", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	cond := strings.TrimSpace(v.Expand(parts[0]))
+	if cond != "" {
+		return strings.TrimSpace(v.Expand(parts[1]))
+	}
+	if len(parts) == 3 {
+		return strings.TrimSpace(v.Expand(parts[2]))
+	}
+	return ""
 }
 
 func patsubstWord(pattern, replacement, word string) string {
@@ -249,13 +516,22 @@ func patsubstWord(pattern, replacement, word string) string {
 	return word
 }
 
-func findMatchingParen(s string) int {
+// patsubstMatch tests whether a word matches a % pattern.
+func patsubstMatch(pattern, word string) bool {
+	if !strings.Contains(pattern, "%") {
+		return word == pattern
+	}
+	prefix, suffix, _ := strings.Cut(pattern, "%")
+	return strings.HasPrefix(word, prefix) && strings.HasSuffix(word, suffix)
+}
+
+func findMatchingBracket(s string) int {
 	depth := 0
 	for i, c := range s {
 		switch c {
-		case '(':
+		case '[':
 			depth++
-		case ')':
+		case ']':
 			depth--
 			if depth == 0 {
 				return i

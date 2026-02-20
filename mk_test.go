@@ -39,7 +39,7 @@ cflags += -Werror
 }
 
 func TestParseLazy(t *testing.T) {
-	input := `lazy version = $(shell echo hello)`
+	input := `lazy version = $[shell echo hello]`
 	f, err := Parse(strings.NewReader(input))
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +47,46 @@ func TestParseLazy(t *testing.T) {
 	v := f.Stmts[0].(VarAssign)
 	if !v.Lazy {
 		t.Error("expected lazy")
+	}
+}
+
+func TestParseCondAssign(t *testing.T) {
+	input := `cc ?= gcc`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := f.Stmts[0].(VarAssign)
+	if v.Name != "cc" || v.Value != "gcc" || v.Op != OpCondSet {
+		t.Errorf("unexpected var: %+v", v)
+	}
+}
+
+func TestCondAssignSemantics(t *testing.T) {
+	input := `
+cc = clang
+cc ?= gcc
+opt ?= O2
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// cc was already set, ?= should not overwrite
+	if got := vars.Get("cc"); got != "clang" {
+		t.Errorf("cc = %q, want %q", got, "clang")
+	}
+	// opt was not set, ?= should set it
+	if got := vars.Get("opt"); got != "O2" {
+		t.Errorf("opt = %q, want %q", got, "O2")
 	}
 }
 
@@ -149,6 +189,116 @@ func TestSubstitutionRef(t *testing.T) {
 	}
 }
 
+func TestFuncSyntax(t *testing.T) {
+	v := NewVars()
+	v.Set("files", "foo.c bar.h baz.c")
+
+	// $[...] should invoke mk functions
+	got := v.Expand("$[filter %.c,$files]")
+	if got != "foo.c baz.c" {
+		t.Errorf("$[filter] = %q, want %q", got, "foo.c baz.c")
+	}
+
+	// $(...) should pass through for shell use
+	got = v.Expand("echo $(date)")
+	if got != "echo $(date)" {
+		t.Errorf("$(...) should pass through, got %q", got)
+	}
+}
+
+func TestBuiltinFunctions(t *testing.T) {
+	v := NewVars()
+	v.Set("src", "foo.c bar.c baz.c")
+	v.Set("objs", "foo.o bar.o baz.o")
+	v.Set("files", "main.c lib.c main.h lib.h")
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// subst
+		{"$[subst .c,.o,$src]", "foo.o bar.o baz.o"},
+		// filter
+		{"$[filter %.c,$files]", "main.c lib.c"},
+		// filter-out
+		{"$[filter-out %.h,$files]", "main.c lib.c"},
+		// dir
+		{"$[dir src/foo.c]", "src/"},
+		{"$[dir foo.c]", "./"},
+		// notdir
+		{"$[notdir src/foo.c]", "foo.c"},
+		// basename
+		{"$[basename src/foo.c]", "src/foo"},
+		// suffix
+		{"$[suffix foo.c bar.h]", ".c .h"},
+		// addprefix
+		{"$[addprefix src/,$src]", "src/foo.c src/bar.c src/baz.c"},
+		// addsuffix
+		{"$[addsuffix .bak,$objs]", "foo.o.bak bar.o.bak baz.o.bak"},
+		// sort (also deduplicates)
+		{"$[sort c b a b]", "a b c"},
+		// word
+		{"$[word 2,$src]", "bar.c"},
+		// words
+		{"$[words $src]", "3"},
+		// strip
+		{"$[strip  foo   bar  ]", "foo bar"},
+		// findstring
+		{"$[findstring bar,$src]", "bar"},
+		{"$[findstring xyz,$src]", ""},
+		// if
+		{"$[if yes,true,false]", "true"},
+		{"$[if ,true,false]", "false"},
+		{"$[if yes,true]", "true"},
+		{"$[if ,true]", ""},
+		// patsubst
+		{"$[patsubst %.c,%.o,$src]", "foo.o bar.o baz.o"},
+	}
+
+	for _, tt := range tests {
+		got := v.Expand(tt.input)
+		if got != tt.want {
+			t.Errorf("Expand(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestVarProperties(t *testing.T) {
+	v := NewVars()
+	v.Set("src", "src/main.c")
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"$src.dir", "src"},
+		{"$src.file", "main.c"},
+	}
+
+	for _, tt := range tests {
+		got := v.Expand(tt.input)
+		if got != tt.want {
+			t.Errorf("Expand(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestLineContinuation(t *testing.T) {
+	input := "cflags = -Wall \\\n-O2 \\\n-Werror\n"
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(f.Stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(f.Stmts))
+	}
+	v := f.Stmts[0].(VarAssign)
+	if v.Value != "-Wall -O2 -Werror" {
+		t.Errorf("line continuation: got %q, want %q", v.Value, "-Wall -O2 -Werror")
+	}
+}
+
 func TestEndToEnd(t *testing.T) {
 	// Set up a temporary directory
 	dir := t.TempDir()
@@ -186,7 +336,7 @@ build/app: $obj
 	os.Chdir(dir)
 	defer os.Chdir(oldDir)
 
-	// Write mkfile to disk for $(wildcard) etc.
+	// Write mkfile to disk for $[wildcard] etc.
 	os.WriteFile(filepath.Join(dir, "mkfile"), []byte(mkfile), 0o644)
 
 	state := &BuildState{Targets: make(map[string]*TargetState)}
@@ -208,5 +358,18 @@ build/app: $obj
 	}
 	if len(rule.prereqs) != 1 || rule.prereqs[0] != "src/main.c" {
 		t.Errorf("prereqs = %v, want [src/main.c]", rule.prereqs)
+	}
+	if rule.stem != "main" {
+		t.Errorf("stem = %q, want %q", rule.stem, "main")
+	}
+}
+
+func TestWhyStale(t *testing.T) {
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+
+	// No previous build
+	reasons := state.WhyStale("foo", []string{"bar"}, "recipe")
+	if len(reasons) != 1 || reasons[0] != "no previous build recorded" {
+		t.Errorf("WhyStale = %v, want [no previous build recorded]", reasons)
 	}
 }
