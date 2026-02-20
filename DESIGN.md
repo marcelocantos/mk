@@ -22,7 +22,7 @@ mk is not a radical reimagination. It is Make with the mistakes fixed.
 cc = gcc                        # immediate (always)
 cflags = -Wall -O2              # immediate
 cflags += -Werror               # append
-lazy version = $(shell git describe)   # explicit deferred evaluation
+lazy version = $[shell git describe]   # explicit deferred evaluation
 ```
 
 All assignments are immediate by default. `lazy` defers evaluation
@@ -38,7 +38,19 @@ the variable `foo`, not `$(f)` followed by `oo`.
 `${name}` delimits when the variable is adjacent to identifier
 characters: `${foo}bar`.
 
-`$$` produces a literal `$` (for shell variables in recipes).
+### Sigil summary
+
+| Syntax | Meaning | Context |
+|--------|---------|---------|
+| `$name` | Variable reference | Everywhere |
+| `${name}` | Variable reference (delimited) | Everywhere |
+| `$[func args]` | mk function call | Everywhere |
+| `$(...)` | Shell command substitution | Recipes (passed through to shell) |
+
+`$name` and `${name}` are expanded by mk everywhere. `$[...]` is
+expanded by mk everywhere. `$(...)` is **never** interpreted by mk —
+it is passed through verbatim to the shell. This eliminates the `$$`
+escaping dance that Make requires for shell commands in recipes.
 
 ### Substitution references
 
@@ -104,6 +116,29 @@ build/{name}.o: src/{name}.c
 | `$target.file` | Filename part of target |
 
 No `$@`, `$<`, `$^`. One set of names.
+
+### Shell interop
+
+`$(...)` in recipes is shell command substitution, not mk expansion.
+mk variables and shell variables coexist naturally:
+
+```
+build/app: $obj
+    commit=$(git rev-parse --short HEAD)
+    date=$(date +%Y-%m-%d)
+    $cxx -DCOMMIT="\"$commit\"" -DDATE="\"$date\"" -o $target $inputs
+```
+
+`$cxx`, `$target`, `$inputs` are mk variables (expanded before the
+shell sees the script). `$(git ...)` and `$(date ...)` are shell
+command substitution (passed through verbatim). mk functions are
+available in recipes via `$[...]`:
+
+```
+build/report: $obj
+    echo "building $[words $inputs] objects"
+    $cxx -o $target $inputs
+```
 
 ---
 
@@ -296,28 +331,39 @@ Conditionals can appear at file scope or inside other conditionals.
 
 ## 9. Functions
 
+### Syntax
+
+mk functions use `$[func args]`. This is distinct from shell
+`$(...)` and variable `${name}` — each sigil has exactly one meaning:
+
+```
+obj = $[patsubst %.cc,$builddir/%.o,$lib_srcs]
+src = $[wildcard src/*.c]
+lazy version = $[shell git describe]
+```
+
 ### Built-in functions
 
 | Function | Description |
 |----------|-------------|
-| `$(wildcard pattern)` | Glob file paths |
-| `$(shell command)` | Run a shell command, capture stdout |
-| `$(patsubst pat,repl,text)` | Pattern substitution across words |
-| `$(subst from,to,text)` | Simple string substitution |
-| `$(filter pattern,text)` | Keep words matching pattern |
-| `$(filter-out pattern,text)` | Remove words matching pattern |
-| `$(dir paths)` | Directory part of each path |
-| `$(notdir paths)` | Filename part of each path |
-| `$(basename paths)` | Strip suffix from each path |
-| `$(suffix paths)` | Extract suffix from each path |
-| `$(addprefix prefix,list)` | Prepend to each word |
-| `$(addsuffix suffix,list)` | Append to each word |
-| `$(sort list)` | Sort and deduplicate |
-| `$(word n,list)` | Nth word (1-indexed) |
-| `$(words list)` | Word count |
-| `$(strip text)` | Normalize whitespace |
-| `$(if cond,then,else)` | Conditional expansion |
-| `$(findstring needle,haystack)` | Search for substring |
+| `$[wildcard pattern]` | Glob file paths |
+| `$[shell command]` | Run a shell command, capture stdout |
+| `$[patsubst pat,repl,text]` | Pattern substitution across words |
+| `$[subst from,to,text]` | Simple string substitution |
+| `$[filter pattern,text]` | Keep words matching pattern |
+| `$[filter-out pattern,text]` | Remove words matching pattern |
+| `$[dir paths]` | Directory part of each path |
+| `$[notdir paths]` | Filename part of each path |
+| `$[basename paths]` | Strip suffix from each path |
+| `$[suffix paths]` | Extract suffix from each path |
+| `$[addprefix prefix,list]` | Prepend to each word |
+| `$[addsuffix suffix,list]` | Append to each word |
+| `$[sort list]` | Sort and deduplicate |
+| `$[word n,list]` | Nth word (1-indexed) |
+| `$[words list]` | Word count |
+| `$[strip text]` | Normalize whitespace |
+| `$[if cond,then,else]` | Conditional expansion |
+| `$[findstring needle,haystack]` | Search for substring |
 
 ### User-defined functions
 
@@ -326,7 +372,7 @@ fn objpath(src):
     return $src:src/%.c=build/%.o
 ```
 
-Invoked as `$(objpath $src)`. Named parameters, no positional
+Invoked as `$[objpath $src]`. Named parameters, no positional
 `$(1)`/`$(2)`.
 
 ### Loops
@@ -417,7 +463,9 @@ If no target is specified, mk builds the first non-task rule.
 |---|---|
 | Tab-only indentation | Any whitespace |
 | `$x` as `$(x)` single-char parse | `$name` means `name` |
+| `$(func ...)` overloaded for functions and shell | `$[func ...]` for mk functions; `$(...)` is always shell |
 | `=` (recursive/lazy by default) | `=` is immediate; `lazy` keyword for deferred |
+| `$$` escaping in recipes | Not needed — `$(...)` is shell, `$[...]` is mk |
 | Suffix rules (`.c.o:`) | Removed |
 | Implicit rules | Removed — use `include std/c.mk` |
 | Built-in variables (`CC`, `CFLAGS`) | Removed — use `include std/c.mk` |
@@ -428,13 +476,12 @@ If no target is specified, mk builds the first non-task rule.
 | `VPATH` / `vpath` | Removed — use explicit paths or scoped includes |
 | `$(eval)` | `for` loops + `fn` |
 | `define`/`endef` | `fn` |
-| `$(call func,$(1),$(2))` | `$(func arg1 arg2)` with named params |
+| `$(call func,$(1),$(2))` | `$[func arg1 arg2]` with named params |
 | `$(MAKE)` recursive make | Configs (`:config`), scoped includes |
 | Double-colon rules | Removed |
 | Archive members `lib(member)` | Removed |
 | `-include *.d` dependency ritual | Build database tracks deps |
 | `%` (single anonymous stem) | `{name}` (named, multiple) |
-| `$$` for shell `$` in recipes | Same (`$$`) — but rarely needed since single-shell recipes reduce escaping |
 | `export` / `unexport` | All variables are environment |
 | `override` | Command-line always wins |
 | `ifeq ($(X),val)` | `if $X == val` |
@@ -452,10 +499,10 @@ If no target is specified, mk builds the first non-task rule.
 | Pattern rules | `{name}` replaces `%`, but same concept |
 | Parallel execution (`-j`) | Same |
 | `@` / `-` recipe prefixes | Same |
-| `$(wildcard)`, `$(shell)`, `$(patsubst)` | Same syntax |
+| `$[wildcard]`, `$[shell]`, `$[patsubst]` | `$[...]` syntax, same semantics |
 | `include` | Extended with `as` scoping |
 | `-n` dry run | More accurate with build database |
-| Command-line variable overrides | Same: `mk CC=clang` |
+| Command-line variable overrides | Same: `mk cc=clang` |
 | Substitution references | `$var:.c=.o` |
 
 ---
@@ -502,12 +549,12 @@ config dist:
 
 lib_srcs = src/csp.cc src/channel.cc src/runtime.cpp \
            src/reactor.cc src/stack_pool.cc
-test_srcs = test/main.cc $(wildcard test/*.test.cc)
-bench_srcs = $(wildcard bench/*.bench.cc)
+test_srcs = test/main.cc $[wildcard test/*.test.cc]
+bench_srcs = $[wildcard bench/*.bench.cc]
 
-lib_objs = $(patsubst %.cc,$builddir/%.o,$(patsubst %.cpp,$builddir/%.o,$lib_srcs))
-test_objs = $(patsubst %.cc,$builddir/%.o,$test_srcs)
-bench_objs = $(patsubst %.cc,$builddir/%.o,$bench_srcs)
+lib_objs = $[patsubst %.cc,$builddir/%.o,$[patsubst %.cpp,$builddir/%.o,$lib_srcs]]
+test_objs = $[patsubst %.cc,$builddir/%.o,$test_srcs]
+bench_objs = $[patsubst %.cc,$builddir/%.o,$bench_srcs]
 
 # --- Rules ---
 
