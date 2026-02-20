@@ -12,56 +12,25 @@ import (
 
 func main() {
 	var (
-		file    = flag.String("f", "mkfile", "mkfile to read")
-		verbose = flag.Bool("v", false, "verbose output")
-		force   = flag.Bool("B", false, "unconditional rebuild (ignore state)")
-		dryRun  = flag.Bool("n", false, "dry run (print commands without executing)")
+		file     = flag.String("f", "mkfile", "mkfile to read")
+		verbose  = flag.Bool("v", false, "verbose output")
+		force    = flag.Bool("B", false, "unconditional rebuild (ignore state)")
+		dryRun   = flag.Bool("n", false, "dry run (print commands without executing)")
+		why      = flag.Bool("why", false, "explain why targets are stale")
+		graph    = flag.Bool("graph", false, "print dependency subgraph")
+		showState = flag.Bool("state", false, "show build database entries")
 	)
 	flag.Parse()
 
 	args := flag.Args()
 
-	// Subcommands
-	if len(args) > 0 {
-		switch args[0] {
-		case "why":
-			if len(args) < 2 {
-				fmt.Fprintf(os.Stderr, "mk why: requires a target\n")
-				os.Exit(1)
-			}
-			if err := cmdWhy(*file, args[1]); err != nil {
-				fmt.Fprintf(os.Stderr, "mk: %s\n", err)
-				os.Exit(1)
-			}
-			return
-		case "state":
-			if len(args) < 2 {
-				fmt.Fprintf(os.Stderr, "mk state: requires a target\n")
-				os.Exit(1)
-			}
-			cmdState(args[1])
-			return
-		}
-	}
-
-	if err := run(*file, *verbose, *force, *dryRun, args); err != nil {
+	if err := run(*file, *verbose, *force, *dryRun, *why, *graph, *showState, args); err != nil {
 		fmt.Fprintf(os.Stderr, "mk: %s\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(file string, verbose, force, dryRun bool, targets []string) error {
-	f, err := os.Open(file)
-	if err != nil {
-		return fmt.Errorf("cannot open %s: %w", file, err)
-	}
-	defer f.Close()
-
-	ast, err := mk.Parse(f)
-	if err != nil {
-		return err
-	}
-
+func run(file string, verbose, force, dryRun, why, graph, showState bool, targets []string) error {
 	// Process command-line variable overrides
 	vars := mk.NewVars()
 	var buildTargets []string
@@ -73,36 +42,24 @@ func run(file string, verbose, force, dryRun bool, targets []string) error {
 		}
 	}
 
-	state := mk.LoadState()
-
-	graph, err := mk.BuildGraph(ast, vars, state)
-	if err != nil {
-		return err
-	}
-
-	exec := mk.NewExecutor(graph, state, vars, verbose, force, dryRun)
-
-	if len(buildTargets) == 0 {
-		def := graph.DefaultTarget()
-		if def == "" {
-			return fmt.Errorf("no targets specified and no default target")
+	// --state only needs the build database
+	if showState {
+		state := mk.LoadState()
+		if len(buildTargets) == 0 {
+			return fmt.Errorf("--state requires at least one target")
 		}
-		buildTargets = []string{def}
-	}
-
-	for _, t := range buildTargets {
-		if err := exec.Build(t); err != nil {
-			return err
+		for _, t := range buildTargets {
+			ts := state.Targets[t]
+			if ts == nil {
+				fmt.Printf("no build state recorded for %q\n", t)
+				continue
+			}
+			data, _ := json.MarshalIndent(ts, "", "  ")
+			fmt.Printf("state for %q:\n%s\n", t, string(data))
 		}
-	}
-
-	if dryRun {
 		return nil
 	}
-	return state.Save()
-}
 
-func cmdWhy(file, target string) error {
 	f, err := os.Open(file)
 	if err != nil {
 		return fmt.Errorf("cannot open %s: %w", file, err)
@@ -114,36 +71,56 @@ func cmdWhy(file, target string) error {
 		return err
 	}
 
-	vars := mk.NewVars()
 	state := mk.LoadState()
-	graph, err := mk.BuildGraph(ast, vars, state)
+
+	g, err := mk.BuildGraph(ast, vars, state)
 	if err != nil {
 		return err
 	}
 
-	reasons, err := graph.WhyRebuild(target)
-	if err != nil {
-		return err
+	if len(buildTargets) == 0 {
+		def := g.DefaultTarget()
+		if def == "" {
+			return fmt.Errorf("no targets specified and no default target")
+		}
+		buildTargets = []string{def}
 	}
 
-	if len(reasons) == 0 {
-		fmt.Printf("%s is up to date\n", target)
-	} else {
-		fmt.Printf("%s needs rebuilding:\n", target)
-		for _, r := range reasons {
-			fmt.Printf("  - %s\n", r)
+	// --why: explain why targets are stale, then exit
+	if why {
+		for _, t := range buildTargets {
+			reasons, err := g.WhyRebuild(t)
+			if err != nil {
+				return err
+			}
+			if len(reasons) == 0 {
+				fmt.Printf("%s is up to date\n", t)
+			} else {
+				fmt.Printf("%s needs rebuilding:\n", t)
+				for _, r := range reasons {
+					fmt.Printf("  - %s\n", r)
+				}
+			}
+		}
+		return nil
+	}
+
+	// --graph: print dependency subgraph as DOT, then exit
+	if graph {
+		return g.PrintGraph(buildTargets)
+	}
+
+	// Normal build
+	exec := mk.NewExecutor(g, state, vars, verbose, force, dryRun)
+
+	for _, t := range buildTargets {
+		if err := exec.Build(t); err != nil {
+			return err
 		}
 	}
-	return nil
-}
 
-func cmdState(target string) {
-	state := mk.LoadState()
-	ts := state.Targets[target]
-	if ts == nil {
-		fmt.Printf("no build state recorded for %q\n", target)
-		return
+	if dryRun {
+		return nil
 	}
-	data, _ := json.MarshalIndent(ts, "", "  ")
-	fmt.Printf("state for %q:\n%s\n", target, string(data))
+	return state.Save()
 }

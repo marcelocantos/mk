@@ -243,6 +243,44 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 	return nil, fmt.Errorf("no rule to build %q", target)
 }
 
+// PrintGraph prints the dependency subgraph rooted at the given targets as DOT.
+func (g *Graph) PrintGraph(targets []string) error {
+	fmt.Println("digraph mk {")
+	fmt.Println("  rankdir=LR;")
+	visited := map[string]bool{}
+	for _, t := range targets {
+		if err := g.printGraph(t, visited); err != nil {
+			return err
+		}
+	}
+	fmt.Println("}")
+	return nil
+}
+
+func (g *Graph) printGraph(target string, visited map[string]bool) error {
+	if visited[target] {
+		return nil
+	}
+	visited[target] = true
+
+	rule, err := g.Resolve(target)
+	if err != nil {
+		return err
+	}
+
+	if rule.isTask {
+		fmt.Printf("  %q [shape=box];\n", target)
+	}
+
+	for _, p := range rule.prereqs {
+		fmt.Printf("  %q -> %q;\n", target, p)
+		if err := g.printGraph(p, visited); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DefaultTarget returns the first explicit non-task target.
 func (g *Graph) DefaultTarget() string {
 	for _, r := range g.rules {

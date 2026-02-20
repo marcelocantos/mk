@@ -447,13 +447,13 @@ $ mk cc=clang test:asan -j0
 
 If no target is specified, mk builds the first non-task rule.
 
-### Diagnostic commands
+### Diagnostic flags
 
-| Command | Meaning |
-|---------|---------|
-| `mk why <target>` | Explain why a target is stale |
-| `mk graph <target>` | Print the dependency subgraph |
-| `mk state <target>` | Show build database entry |
+| Flag | Meaning |
+|------|---------|
+| `--why` | Explain why each target is stale |
+| `--graph` | Print the dependency subgraph |
+| `--state` | Show build database entries |
 
 ---
 
@@ -600,5 +600,5 @@ $ mk test:debug+asan     # debug + ASan
 $ mk test:dist           # test distribution build
 $ mk bench:release -j0   # release benchmarks, all cores
 $ mk clean               # remove everything
-$ mk why build/src/csp.o # explain why it's stale
+$ mk --why build/src/csp.o # explain why it's stale
 ```
