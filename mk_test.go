@@ -1,6 +1,7 @@
 package mk
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -791,6 +792,244 @@ out.txt: a.txt | b.txt
 	got, _ := os.ReadFile(filepath.Join(dir, "out.txt"))
 	if s := strings.TrimSpace(string(got)); s != "a.txt" {
 		t.Errorf("$inputs = %q, want %q (order-only should be excluded)", s, "a.txt")
+	}
+}
+
+func TestUnscopedInclude(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "common.mk"), []byte("cc = clang\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "src.c"), []byte("int main() { return 0; }"), 0o644)
+
+	mkfile := `
+include common.mk
+
+build/app: src.c
+    $cc -o $target $input
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Variable from included file should be visible
+	if got := vars.Get("cc"); got != "clang" {
+		t.Errorf("cc = %q, want %q", got, "clang")
+	}
+
+	// Rule from root mkfile should work
+	rule, err := graph.Resolve("build/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.prereqs[0] != "src.c" {
+		t.Errorf("prereqs = %v, want [src.c]", rule.prereqs)
+	}
+}
+
+func TestScopedInclude(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.MkdirAll(filepath.Join(dir, "lib"), 0o755)
+	os.WriteFile(filepath.Join(dir, "lib", "mkfile"), []byte(`
+src = foo.c bar.c
+
+build/libfoo.a: build/foo.o build/bar.o
+    ar rcs $target $inputs
+`), 0o644)
+	os.WriteFile(filepath.Join(dir, "lib", "foo.c"), []byte("void foo() {}"), 0o644)
+	os.WriteFile(filepath.Join(dir, "lib", "bar.c"), []byte("void bar() {}"), 0o644)
+
+	mkfile := `
+cc = gcc
+include lib/mkfile as lib
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Scoped variable should be accessible as lib.src
+	if got := vars.Get("lib.src"); got != "foo.c bar.c" {
+		t.Errorf("lib.src = %q, want %q", got, "foo.c bar.c")
+	}
+
+	// Targets should be rebased under lib/
+	rule, err := graph.Resolve("lib/build/libfoo.a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.target != "lib/build/libfoo.a" {
+		t.Errorf("target = %q, want %q", rule.target, "lib/build/libfoo.a")
+	}
+	// Prereqs should also be rebased
+	expected := []string{"lib/build/foo.o", "lib/build/bar.o"}
+	if len(rule.prereqs) != 2 || rule.prereqs[0] != expected[0] || rule.prereqs[1] != expected[1] {
+		t.Errorf("prereqs = %v, want %v", rule.prereqs, expected)
+	}
+}
+
+func TestScopedIncludeInheritance(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.MkdirAll(filepath.Join(dir, "lib"), 0o755)
+	// Child mkfile uses $cc from parent
+	os.WriteFile(filepath.Join(dir, "lib", "mkfile"), []byte(`
+compiler = $cc
+`), 0o644)
+
+	mkfile := `
+cc = clang
+include lib/mkfile as lib
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Child should have inherited cc from parent and used it
+	if got := vars.Get("lib.compiler"); got != "clang" {
+		t.Errorf("lib.compiler = %q, want %q", got, "clang")
+	}
+
+	// Parent's cc should not be affected
+	if got := vars.Get("cc"); got != "clang" {
+		t.Errorf("cc = %q, want %q", got, "clang")
+	}
+}
+
+func TestPatternDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	// Create two subdirectories with mkfiles
+	for _, sub := range []string{"lib", "app"} {
+		os.MkdirAll(filepath.Join(dir, sub), 0o755)
+		os.WriteFile(filepath.Join(dir, sub, "mkfile"), []byte(fmt.Sprintf(`
+name = %s
+`, sub)), 0o644)
+	}
+
+	mkfile := `
+include {path}/mkfile as {path}
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Each subdirectory's variables should be scoped
+	if got := vars.Get("app.name"); got != "app" {
+		t.Errorf("app.name = %q, want %q", got, "app")
+	}
+	if got := vars.Get("lib.name"); got != "lib" {
+		t.Errorf("lib.name = %q, want %q", got, "lib")
+	}
+}
+
+func TestScopedIncludePatternRule(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.MkdirAll(filepath.Join(dir, "lib"), 0o755)
+	os.WriteFile(filepath.Join(dir, "lib", "mkfile"), []byte(`
+build/{name}.o: {name}.c
+    gcc -c $input -o $target
+`), 0o644)
+	os.WriteFile(filepath.Join(dir, "lib", "foo.c"), []byte("void foo() {}"), 0o644)
+
+	mkfile := `
+include lib/mkfile as lib
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pattern rule targets should be rebased: lib/build/{name}.o
+	rule, err := graph.Resolve("lib/build/foo.o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.target != "lib/build/foo.o" {
+		t.Errorf("target = %q, want %q", rule.target, "lib/build/foo.o")
+	}
+	if len(rule.prereqs) != 1 || rule.prereqs[0] != "lib/foo.c" {
+		t.Errorf("prereqs = %v, want [lib/foo.c]", rule.prereqs)
+	}
+}
+
+func TestScopedVariableExpansion(t *testing.T) {
+	v := NewVars()
+	v.Set("lib.src", "foo.c bar.c")
+	v.Set("target", "build/main.o")
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Scoped variable lookup
+		{"$lib.src", "foo.c bar.c"},
+		// Property still works
+		{"$target.dir", "build"},
+		{"$target.file", "main.o"},
+		// Scoped + property
+		{"$lib.src.dir", "."},
+	}
+
+	for _, tt := range tests {
+		got := v.Expand(tt.input)
+		if got != tt.want {
+			t.Errorf("Expand(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 

@@ -3,15 +3,17 @@ package mk
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 // Graph represents the build dependency graph.
 type Graph struct {
-	rules    []resolvedRule
-	patterns []patternRule
-	vars     *Vars
-	state    *BuildState
+	rules       []resolvedRule
+	patterns    []patternRule
+	vars        *Vars
+	state       *BuildState
+	scopePrefix string // current include scope path prefix (e.g., "lib/")
 }
 
 type resolvedRule struct {
@@ -113,8 +115,7 @@ func (g *Graph) evalNode(node Node) error {
 		return g.evalConditional(n)
 
 	case Include:
-		// TODO: implement include
-		return fmt.Errorf("include not yet implemented")
+		return g.evalInclude(n)
 	}
 
 	return nil
@@ -137,6 +138,19 @@ func (g *Graph) addRule(r Rule) error {
 	for _, p := range r.OrderOnlyPrereqs {
 		expanded := g.vars.Expand(p)
 		expandedOrderOnly = append(expandedOrderOnly, strings.Fields(expanded)...)
+	}
+
+	// Rebase paths under scope prefix
+	if g.scopePrefix != "" {
+		for i, t := range expandedTargets {
+			expandedTargets[i] = filepath.Clean(filepath.Join(g.scopePrefix, t))
+		}
+		for i, p := range expandedPrereqs {
+			expandedPrereqs[i] = filepath.Clean(filepath.Join(g.scopePrefix, p))
+		}
+		for i, p := range expandedOrderOnly {
+			expandedOrderOnly[i] = filepath.Clean(filepath.Join(g.scopePrefix, p))
+		}
 	}
 
 	// Check if any target is a pattern
@@ -199,6 +213,107 @@ func (g *Graph) evalConditional(c Conditional) error {
 		}
 	}
 	return nil
+}
+
+func (g *Graph) evalInclude(inc Include) error {
+	path := g.vars.Expand(inc.Path)
+
+	// Pattern discovery: include {path}/mkfile as {path}
+	if strings.Contains(path, "{") {
+		return g.evalPatternInclude(path, inc.Alias)
+	}
+
+	// Resolve path relative to current scope
+	if g.scopePrefix != "" {
+		path = filepath.Join(g.scopePrefix, path)
+	}
+
+	return g.doInclude(path, inc.Alias)
+}
+
+func (g *Graph) evalPatternInclude(pattern, _ string) error {
+	// Replace {name} with * for globbing
+	globPattern := pattern
+	for {
+		start := strings.IndexByte(globPattern, '{')
+		if start < 0 {
+			break
+		}
+		end := strings.IndexByte(globPattern[start:], '}')
+		if end < 0 {
+			break
+		}
+		globPattern = globPattern[:start] + "*" + globPattern[start+end+1:]
+	}
+
+	if g.scopePrefix != "" {
+		globPattern = filepath.Join(g.scopePrefix, globPattern)
+	}
+
+	matches, err := filepath.Glob(globPattern)
+	if err != nil {
+		return fmt.Errorf("include glob %q: %w", globPattern, err)
+	}
+
+	for _, match := range matches {
+		dir := filepath.Dir(match)
+		// Strip scopePrefix to get the alias
+		alias := dir
+		if g.scopePrefix != "" {
+			alias, _ = filepath.Rel(g.scopePrefix, dir)
+		}
+		if err := g.doInclude(match, alias); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *Graph) doInclude(path, alias string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("cannot open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	ast, err := Parse(f)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+
+	if alias == "" {
+		// Unscoped include — paste directly into current scope
+		return g.evaluate(ast.Stmts)
+	}
+
+	// Scoped include — isolate variables, rebase paths
+	parentVars := g.vars
+	parentPrefix := g.scopePrefix
+
+	childVars := parentVars.Clone()
+	parentSnapshot := parentVars.Snapshot()
+
+	g.vars = childVars
+	g.scopePrefix = filepath.Dir(path)
+	if g.scopePrefix == "." {
+		g.scopePrefix = alias
+	}
+
+	err = g.evaluate(ast.Stmts)
+
+	// Export child-set variables as alias.varname to parent
+	childSnapshot := childVars.Snapshot()
+	for k, v := range childSnapshot {
+		if old, exists := parentSnapshot[k]; !exists || old != v {
+			parentVars.Set(alias+"."+k, v)
+		}
+	}
+
+	// Restore parent scope
+	g.vars = parentVars
+	g.scopePrefix = parentPrefix
+
+	return err
 }
 
 // Resolve finds the rule for a given target, including pattern matching.

@@ -116,7 +116,7 @@ func (v *Vars) Expand(s string) string {
 			}
 
 		case isIdentStart(s[i]):
-			// $name, $name.prop, or $name:old=new (substitution reference)
+			// $name, $name.scope, $name.prop, or $name:old=new (substitution reference)
 			start := i
 			for i < len(s) && isIdentCont(s[i]) {
 				i++
@@ -124,16 +124,37 @@ func (v *Vars) Expand(s string) string {
 			name := s[start:i]
 			val := v.Get(name)
 
-			// Check for property access: $name.dir, $name.file
+			// Check for dot: could be scoped variable ($lib.src) or property ($target.dir)
 			if i < len(s) && s[i] == '.' {
 				propStart := i + 1
 				for i+1 < len(s) && isIdentCont(s[i+1]) {
 					i++
 				}
 				if propStart <= len(s) {
-					prop := s[propStart : i+1]
+					member := s[propStart : i+1]
+					// Try scoped variable first (e.g., lib.src)
+					scopedName := name + "." + member
+					if scopedVal := v.Get(scopedName); scopedVal != "" {
+						i++ // consume past member
+						val = scopedVal
+						// Check for further property access ($lib.src.dir)
+						if i < len(s) && s[i] == '.' {
+							pStart := i + 1
+							for i+1 < len(s) && isIdentCont(s[i+1]) {
+								i++
+							}
+							if pStart <= len(s) {
+								prop := s[pStart : i+1]
+								i++
+								val = varProperty(val, prop)
+							}
+						}
+						b.WriteString(val)
+						continue
+					}
+					// Fall back to property access (e.g., target.dir)
 					i++ // consume past property
-					val = varProperty(val, prop)
+					val = varProperty(val, member)
 					b.WriteString(val)
 					continue
 				}
@@ -195,6 +216,18 @@ func (v *Vars) Environ() []string {
 		env = append(env, k+"="+val)
 	}
 	return env
+}
+
+// Snapshot returns a copy of all current variable values (resolving lazy ones).
+func (v *Vars) Snapshot() map[string]string {
+	snap := make(map[string]string, len(v.vals)+len(v.lazy))
+	for k, val := range v.vals {
+		snap[k] = val
+	}
+	for k := range v.lazy {
+		snap[k] = v.Get(k)
+	}
+	return snap
 }
 
 // Clone creates a copy of the variable store.
