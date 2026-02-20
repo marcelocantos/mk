@@ -51,108 +51,116 @@ func (s *BuildState) Save() error {
 	return os.WriteFile(stateFile, data, 0o644)
 }
 
-// IsStale determines if a target needs rebuilding.
-func (s *BuildState) IsStale(target string, prereqs []string, recipeText string) bool {
-	ts := s.Targets[target]
-	if ts == nil {
-		return true
-	}
-
-	// Check if target file exists (for file targets)
-	if _, err := os.Stat(target); os.IsNotExist(err) {
-		return true
-	}
-
-	// Check recipe changed
-	rh := hashString(recipeText)
-	if ts.RecipeHash != rh {
-		return true
-	}
-
-	// Check prerequisite set changed
-	sortedPrereqs := make([]string, len(prereqs))
-	copy(sortedPrereqs, prereqs)
-	sort.Strings(sortedPrereqs)
-	sortedOld := make([]string, len(ts.Prereqs))
-	copy(sortedOld, ts.Prereqs)
-	sort.Strings(sortedOld)
-	if !stringSliceEqual(sortedPrereqs, sortedOld) {
-		return true
-	}
-
-	// Check input content hashes
-	for _, p := range prereqs {
-		h, err := hashFile(p)
-		if err != nil {
+// IsStale determines if any of the targets need rebuilding.
+// Only normal prereqs (not order-only) affect staleness.
+func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText string) bool {
+	for _, target := range targets {
+		ts := s.Targets[target]
+		if ts == nil {
 			return true
 		}
-		if ts.InputHashes[p] != h {
+
+		// Check if target file exists (for file targets)
+		if _, err := os.Stat(target); os.IsNotExist(err) {
 			return true
+		}
+
+		// Check recipe changed
+		rh := hashString(recipeText)
+		if ts.RecipeHash != rh {
+			return true
+		}
+
+		// Check prerequisite set changed
+		sortedPrereqs := make([]string, len(prereqs))
+		copy(sortedPrereqs, prereqs)
+		sort.Strings(sortedPrereqs)
+		sortedOld := make([]string, len(ts.Prereqs))
+		copy(sortedOld, ts.Prereqs)
+		sort.Strings(sortedOld)
+		if !stringSliceEqual(sortedPrereqs, sortedOld) {
+			return true
+		}
+
+		// Check input content hashes
+		for _, p := range prereqs {
+			h, err := hashFile(p)
+			if err != nil {
+				return true
+			}
+			if ts.InputHashes[p] != h {
+				return true
+			}
 		}
 	}
 
 	return false
 }
 
-// WhyStale returns human-readable reasons why a target is stale.
-func (s *BuildState) WhyStale(target string, prereqs []string, recipeText string) []string {
+// WhyStale returns human-readable reasons why any of the targets are stale.
+func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText string) []string {
 	var reasons []string
-	ts := s.Targets[target]
-	if ts == nil {
-		reasons = append(reasons, "no previous build recorded")
-		return reasons
-	}
 
-	if _, err := os.Stat(target); os.IsNotExist(err) {
-		reasons = append(reasons, "target file does not exist")
-	}
-
-	rh := hashString(recipeText)
-	if ts.RecipeHash != rh {
-		reasons = append(reasons, "recipe has changed")
-	}
-
-	sortedPrereqs := make([]string, len(prereqs))
-	copy(sortedPrereqs, prereqs)
-	sort.Strings(sortedPrereqs)
-	sortedOld := make([]string, len(ts.Prereqs))
-	copy(sortedOld, ts.Prereqs)
-	sort.Strings(sortedOld)
-	if !stringSliceEqual(sortedPrereqs, sortedOld) {
-		reasons = append(reasons, "prerequisite set has changed")
-	}
-
-	for _, p := range prereqs {
-		h, err := hashFile(p)
-		if err != nil {
-			reasons = append(reasons, fmt.Sprintf("cannot hash prerequisite %q: %v", p, err))
+	for _, target := range targets {
+		ts := s.Targets[target]
+		if ts == nil {
+			reasons = append(reasons, fmt.Sprintf("%s: no previous build recorded", target))
 			continue
 		}
-		if ts.InputHashes[p] != h {
-			reasons = append(reasons, fmt.Sprintf("prerequisite %q has changed", p))
+
+		if _, err := os.Stat(target); os.IsNotExist(err) {
+			reasons = append(reasons, fmt.Sprintf("%s: target file does not exist", target))
+		}
+
+		rh := hashString(recipeText)
+		if ts.RecipeHash != rh {
+			reasons = append(reasons, "recipe has changed")
+		}
+
+		sortedPrereqs := make([]string, len(prereqs))
+		copy(sortedPrereqs, prereqs)
+		sort.Strings(sortedPrereqs)
+		sortedOld := make([]string, len(ts.Prereqs))
+		copy(sortedOld, ts.Prereqs)
+		sort.Strings(sortedOld)
+		if !stringSliceEqual(sortedPrereqs, sortedOld) {
+			reasons = append(reasons, "prerequisite set has changed")
+		}
+
+		for _, p := range prereqs {
+			h, err := hashFile(p)
+			if err != nil {
+				reasons = append(reasons, fmt.Sprintf("cannot hash prerequisite %q: %v", p, err))
+				continue
+			}
+			if ts.InputHashes[p] != h {
+				reasons = append(reasons, fmt.Sprintf("prerequisite %q has changed", p))
+			}
 		}
 	}
 
 	return reasons
 }
 
-// Record records a successful build.
-func (s *BuildState) Record(target string, prereqs []string, recipeText string) {
-	ts := &TargetState{
-		RecipeHash:  hashString(recipeText),
-		InputHashes: make(map[string]string),
-		Prereqs:     prereqs,
-	}
-	for _, p := range prereqs {
-		h, err := hashFile(p)
-		if err == nil {
-			ts.InputHashes[p] = h
+// Record records a successful build for all targets.
+func (s *BuildState) Record(targets []string, prereqs []string, recipeText string) {
+	for _, target := range targets {
+		ts := &TargetState{
+			RecipeHash:  hashString(recipeText),
+			InputHashes: make(map[string]string),
+			Prereqs:     prereqs,
 		}
+		for _, p := range prereqs {
+			h, err := hashFile(p)
+			if err == nil {
+				ts.InputHashes[p] = h
+			}
+		}
+		if h, err := hashFile(target); err == nil {
+			ts.OutputHash = h
+		}
+		s.Targets[target] = ts
 	}
-	if h, err := hashFile(target); err == nil {
-		ts.OutputHash = h
-	}
-	s.Targets[target] = ts
 }
 
 func hashFile(path string) (string, error) {

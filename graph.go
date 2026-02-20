@@ -15,12 +15,14 @@ type Graph struct {
 }
 
 type resolvedRule struct {
-	target  string
-	prereqs []string
-	recipe  []string
-	isTask  bool
-	keep    bool   // [keep] annotation — don't delete on error
-	stem    string // first capture value from pattern match
+	target           string   // first listed target (for $target)
+	targets          []string // all output targets (for multi-output rules)
+	prereqs          []string
+	orderOnlyPrereqs []string
+	recipe           []string
+	isTask           bool
+	keep             bool   // [keep] annotation — don't delete on error
+	stem             string // first capture value from pattern match
 }
 
 // WhyRebuild returns human-readable reasons why the target needs rebuilding,
@@ -34,7 +36,7 @@ func (g *Graph) WhyRebuild(target string) ([]string, error) {
 		return nil, nil
 	}
 	vars := g.vars.Clone()
-	vars.Set("target", target)
+	vars.Set("target", rule.target)
 	if len(rule.prereqs) > 0 {
 		vars.Set("input", rule.prereqs[0])
 	}
@@ -48,14 +50,15 @@ func (g *Graph) WhyRebuild(target string) ([]string, error) {
 		lines = append(lines, vars.Expand(l))
 	}
 	recipeText := strings.Join(lines, "\n")
-	return g.state.WhyStale(target, rule.prereqs, recipeText), nil
+	return g.state.WhyStale(rule.targets, rule.prereqs, recipeText), nil
 }
 
 type patternRule struct {
-	targetPatterns []Pattern
-	prereqPatterns []Pattern
-	recipe         []string
-	keep           bool
+	targetPatterns         []Pattern
+	prereqPatterns         []Pattern
+	orderOnlyPrereqPatterns []Pattern
+	recipe                 []string
+	keep                   bool
 }
 
 // BuildGraph constructs a dependency graph from a parsed file.
@@ -127,8 +130,13 @@ func (g *Graph) addRule(r Rule) error {
 	var expandedPrereqs []string
 	for _, p := range r.Prereqs {
 		expanded := g.vars.Expand(p)
-		// Handle substitution references: $var:old=new
 		expandedPrereqs = append(expandedPrereqs, strings.Fields(expanded)...)
+	}
+
+	var expandedOrderOnly []string
+	for _, p := range r.OrderOnlyPrereqs {
+		expanded := g.vars.Expand(p)
+		expandedOrderOnly = append(expandedOrderOnly, strings.Fields(expanded)...)
 	}
 
 	// Check if any target is a pattern
@@ -150,18 +158,22 @@ func (g *Graph) addRule(r Rule) error {
 			pat, _ := ParsePattern(p)
 			pr.prereqPatterns = append(pr.prereqPatterns, pat)
 		}
+		for _, p := range expandedOrderOnly {
+			pat, _ := ParsePattern(p)
+			pr.orderOnlyPrereqPatterns = append(pr.orderOnlyPrereqPatterns, pat)
+		}
 		g.patterns = append(g.patterns, pr)
 	} else {
-		// Explicit rule — may expand to multiple targets
-		for _, t := range expandedTargets {
-			g.rules = append(g.rules, resolvedRule{
-				target:  t,
-				prereqs: expandedPrereqs,
-				recipe:  r.Recipe,
-				isTask:  r.IsTask,
-				keep:    r.Keep,
-			})
-		}
+		// Explicit rule — one resolvedRule with all targets grouped
+		g.rules = append(g.rules, resolvedRule{
+			target:           expandedTargets[0],
+			targets:          expandedTargets,
+			prereqs:          expandedPrereqs,
+			orderOnlyPrereqs: expandedOrderOnly,
+			recipe:           r.Recipe,
+			isTask:           r.IsTask,
+			keep:             r.Keep,
+		})
 	}
 
 	return nil
@@ -191,10 +203,12 @@ func (g *Graph) evalConditional(c Conditional) error {
 
 // Resolve finds the rule for a given target, including pattern matching.
 func (g *Graph) Resolve(target string) (*resolvedRule, error) {
-	// Check explicit rules first
+	// Check explicit rules first (match against any target in the group)
 	for i := range g.rules {
-		if g.rules[i].target == target {
-			return &g.rules[i], nil
+		for _, t := range g.rules[i].targets {
+			if t == target {
+				return &g.rules[i], nil
+			}
 		}
 	}
 
@@ -206,10 +220,22 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 				continue
 			}
 
+			// Expand ALL target patterns with captures
+			var targets []string
+			for _, tp2 := range pr.targetPatterns {
+				targets = append(targets, tp2.Expand(captures))
+			}
+
 			// Expand prerequisite patterns with captures
 			var prereqs []string
 			for _, pp := range pr.prereqPatterns {
 				prereqs = append(prereqs, pp.Expand(captures))
+			}
+
+			// Expand order-only prerequisite patterns with captures
+			var orderOnly []string
+			for _, pp := range pr.orderOnlyPrereqPatterns {
+				orderOnly = append(orderOnly, pp.Expand(captures))
 			}
 
 			// Expand captures in recipe
@@ -229,11 +255,13 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 			}
 
 			r := &resolvedRule{
-				target:  target,
-				prereqs: prereqs,
-				recipe:  recipe,
-				keep:    pr.keep,
-				stem:    stem,
+				target:           targets[0],
+				targets:          targets,
+				prereqs:          prereqs,
+				orderOnlyPrereqs: orderOnly,
+				recipe:           recipe,
+				keep:             pr.keep,
+				stem:             stem,
 			}
 			return r, nil
 		}
@@ -241,7 +269,7 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 
 	// Check if the target exists as a file (leaf node)
 	if fileExists(target) {
-		return &resolvedRule{target: target}, nil
+		return &resolvedRule{target: target, targets: []string{target}}, nil
 	}
 
 	return nil, fmt.Errorf("no rule to build %q", target)

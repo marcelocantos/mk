@@ -519,12 +519,287 @@ out.txt: a.txt b.txt
 	}
 }
 
+func TestParseMultiOutput(t *testing.T) {
+	input := `
+gen/{name}.pb.h gen/{name}.pb.cc: proto/{name}.proto
+    protoc --cpp_out=gen/ $input
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.Stmts[0].(Rule)
+	if len(r.Targets) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(r.Targets))
+	}
+	if r.Targets[0] != "gen/{name}.pb.h" || r.Targets[1] != "gen/{name}.pb.cc" {
+		t.Errorf("unexpected targets: %v", r.Targets)
+	}
+}
+
+func TestMultiOutputResolve(t *testing.T) {
+	input := `
+gen/{name}.pb.h gen/{name}.pb.cc: proto/{name}.proto
+    protoc --cpp_out=gen/ $input
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.MkdirAll(filepath.Join(dir, "proto"), 0o755)
+	os.WriteFile(filepath.Join(dir, "proto", "foo.proto"), []byte("syntax = \"proto3\";"), 0o644)
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Resolving either target should return the same multi-output rule
+	rule1, err := graph.Resolve("gen/foo.pb.h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rule1.targets) != 2 {
+		t.Fatalf("expected 2 targets, got %d: %v", len(rule1.targets), rule1.targets)
+	}
+	if rule1.target != "gen/foo.pb.h" {
+		t.Errorf("primary target = %q, want %q", rule1.target, "gen/foo.pb.h")
+	}
+	if rule1.targets[1] != "gen/foo.pb.cc" {
+		t.Errorf("second target = %q, want %q", rule1.targets[1], "gen/foo.pb.cc")
+	}
+
+	rule2, err := graph.Resolve("gen/foo.pb.cc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rule2.targets) != 2 {
+		t.Fatalf("expected 2 targets from second resolve, got %d", len(rule2.targets))
+	}
+	// Primary target is always the first listed, regardless of which output was requested
+	if rule2.target != "gen/foo.pb.h" {
+		t.Errorf("primary target from second resolve = %q, want %q", rule2.target, "gen/foo.pb.h")
+	}
+}
+
+func TestMultiOutputExplicitResolve(t *testing.T) {
+	input := `
+gen/foo.h gen/foo.cc: proto/foo.proto
+    protoc --cpp_out=gen/ $input
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both targets should resolve to the same rule
+	rule1, err := graph.Resolve("gen/foo.h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rule1.targets) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(rule1.targets))
+	}
+
+	rule2, err := graph.Resolve("gen/foo.cc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rule2.targets) != 2 {
+		t.Fatalf("expected 2 targets from second resolve, got %d", len(rule2.targets))
+	}
+}
+
+func TestMultiOutputExecution(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "input.txt"), []byte("hello"), 0o644)
+
+	// Recipe creates both outputs
+	mkfile := `
+out1.txt out2.txt: input.txt
+    cp $input out1.txt
+    cp $input out2.txt
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(graph, state, vars, false, false, false)
+
+	// Build first output
+	if err := exec.Build("out1.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both should exist
+	if _, err := os.Stat(filepath.Join(dir, "out1.txt")); err != nil {
+		t.Error("out1.txt should exist")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out2.txt")); err != nil {
+		t.Error("out2.txt should exist")
+	}
+
+	// Building second output should be a no-op (already built)
+	if err := exec.Build("out2.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// State should have entries for both
+	if state.Targets["out1.txt"] == nil {
+		t.Error("state should have out1.txt")
+	}
+	if state.Targets["out2.txt"] == nil {
+		t.Error("state should have out2.txt")
+	}
+}
+
+func TestParseOrderOnly(t *testing.T) {
+	input := `
+build/foo.o: src/foo.c | build/
+    gcc -c $input -o $target
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.Stmts[0].(Rule)
+	if len(r.Prereqs) != 1 || r.Prereqs[0] != "src/foo.c" {
+		t.Errorf("prereqs = %v, want [src/foo.c]", r.Prereqs)
+	}
+	if len(r.OrderOnlyPrereqs) != 1 || r.OrderOnlyPrereqs[0] != "build/" {
+		t.Errorf("order-only = %v, want [build/]", r.OrderOnlyPrereqs)
+	}
+}
+
+func TestOrderOnlyNoRebuild(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "src.txt"), []byte("source"), 0o644)
+	os.WriteFile(filepath.Join(dir, "order.txt"), []byte("order1"), 0o644)
+
+	mkfile := `
+out.txt: src.txt | order.txt
+    cat $input > $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First build
+	exec := NewExecutor(graph, state, vars, false, false, false)
+	if err := exec.Build("out.txt"); err != nil {
+		t.Fatal(err)
+	}
+	state.Save()
+
+	// Overwrite out.txt with a sentinel so we can detect if recipe re-runs
+	os.WriteFile(filepath.Join(dir, "out.txt"), []byte("sentinel"), 0o644)
+
+	// Modify the order-only prereq
+	os.WriteFile(filepath.Join(dir, "order.txt"), []byte("order2-changed"), 0o644)
+
+	// Reload state and rebuild — recipe should NOT run
+	state = LoadState()
+	graph, err = BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec = NewExecutor(graph, state, vars, false, false, false)
+	if err := exec.Build("out.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sentinel should still be there — recipe didn't re-run
+	got, _ := os.ReadFile(filepath.Join(dir, "out.txt"))
+	if string(got) != "sentinel" {
+		t.Errorf("recipe should NOT have re-run, but out.txt = %q", string(got))
+	}
+}
+
+func TestOrderOnlyInputsExclusion(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644)
+
+	// order-only prereq should NOT appear in $inputs or $input
+	mkfile := `
+out.txt: a.txt | b.txt
+    echo "$inputs" > $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(graph, state, vars, false, false, false)
+	if err := exec.Build("out.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(dir, "out.txt"))
+	if s := strings.TrimSpace(string(got)); s != "a.txt" {
+		t.Errorf("$inputs = %q, want %q (order-only should be excluded)", s, "a.txt")
+	}
+}
+
 func TestWhyStale(t *testing.T) {
 	state := &BuildState{Targets: make(map[string]*TargetState)}
 
 	// No previous build
-	reasons := state.WhyStale("foo", []string{"bar"}, "recipe")
-	if len(reasons) != 1 || reasons[0] != "no previous build recorded" {
-		t.Errorf("WhyStale = %v, want [no previous build recorded]", reasons)
+	reasons := state.WhyStale([]string{"foo"}, []string{"bar"}, "recipe")
+	if len(reasons) != 1 || reasons[0] != "foo: no previous build recorded" {
+		t.Errorf("WhyStale = %v, want [foo: no previous build recorded]", reasons)
 	}
 }

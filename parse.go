@@ -134,15 +134,16 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 	}
 
 	// Rule or task
-	if isTask, keep, targets, prereqs, ok := parseRuleHeader(trimmed); ok {
+	if isTask, keep, targets, prereqs, orderOnly, ok := parseRuleHeader(trimmed); ok {
 		recipe := p.parseRecipe()
 		return Rule{
-			Targets: targets,
-			Prereqs: prereqs,
-			Recipe:  recipe,
-			IsTask:  isTask,
-			Keep:    keep,
-			Line:    lineNum,
+			Targets:          targets,
+			Prereqs:          prereqs,
+			OrderOnlyPrereqs: orderOnly,
+			Recipe:           recipe,
+			IsTask:           isTask,
+			Keep:             keep,
+			Line:             lineNum,
 		}, nil
 	}
 
@@ -256,7 +257,7 @@ func parseAppend(line string) (string, string, bool) {
 	return "", "", false
 }
 
-func parseRuleHeader(line string) (isTask, keep bool, targets []string, prereqs []string, ok bool) {
+func parseRuleHeader(line string) (isTask, keep bool, targets, prereqs, orderOnlyPrereqs []string, ok bool) {
 	if strings.HasPrefix(line, "!") {
 		isTask = true
 		line = line[1:]
@@ -264,14 +265,14 @@ func parseRuleHeader(line string) (isTask, keep bool, targets []string, prereqs 
 
 	colonIdx := strings.IndexByte(line, ':')
 	if colonIdx < 0 {
-		return false, false, nil, nil, false
+		return false, false, nil, nil, nil, false
 	}
 
 	targetStr := strings.TrimSpace(line[:colonIdx])
 	prereqStr := strings.TrimSpace(line[colonIdx+1:])
 
 	if targetStr == "" {
-		return false, false, nil, nil, false
+		return false, false, nil, nil, nil, false
 	}
 
 	// Check for [keep] annotation
@@ -281,11 +282,17 @@ func parseRuleHeader(line string) (isTask, keep bool, targets []string, prereqs 
 	}
 
 	targets = strings.Fields(targetStr)
-	if prereqStr != "" {
-		prereqs = strings.Fields(prereqStr)
+
+	// Split prereqs on | for order-only prerequisites
+	normalStr, orderOnlyStr, _ := strings.Cut(prereqStr, "|")
+	if s := strings.TrimSpace(normalStr); s != "" {
+		prereqs = strings.Fields(s)
+	}
+	if s := strings.TrimSpace(orderOnlyStr); s != "" {
+		orderOnlyPrereqs = strings.Fields(s)
 	}
 
-	return isTask, keep, targets, prereqs, true
+	return isTask, keep, targets, prereqs, orderOnlyPrereqs, true
 }
 
 func parseInclude(line string, lineNum int) (Node, error) {

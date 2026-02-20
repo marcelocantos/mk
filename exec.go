@@ -36,17 +36,28 @@ func (e *Executor) Build(target string) error {
 	if e.built[target] {
 		return nil
 	}
-	e.built[target] = true
 
 	rule, err := e.graph.Resolve(target)
 	if err != nil {
 		return err
 	}
 
-	// Build prerequisites first
+	// Mark all outputs as built to prevent re-execution of multi-output rules
+	for _, t := range rule.targets {
+		e.built[t] = true
+	}
+
+	// Build normal prerequisites first
 	for _, p := range rule.prereqs {
 		if err := e.Build(p); err != nil {
 			return fmt.Errorf("building %q for %q: %w", p, target, err)
+		}
+	}
+
+	// Build order-only prerequisites (ordering only, no staleness)
+	for _, p := range rule.orderOnlyPrereqs {
+		if err := e.Build(p); err != nil {
+			return fmt.Errorf("building order-only %q for %q: %w", p, target, err)
 		}
 	}
 
@@ -55,29 +66,31 @@ func (e *Executor) Build(target string) error {
 		return nil
 	}
 
-	// Check staleness
-	recipeText := e.expandRecipe(rule, target)
-	if !rule.isTask && !e.force && !e.state.IsStale(target, rule.prereqs, recipeText) {
+	// Check staleness (only normal prereqs affect staleness)
+	recipeText := e.expandRecipe(rule)
+	if !rule.isTask && !e.force && !e.state.IsStale(rule.targets, rule.prereqs, recipeText) {
 		if e.verbose {
-			fmt.Fprintf(os.Stderr, "mk: %q is up to date\n", target)
+			fmt.Fprintf(os.Stderr, "mk: %q is up to date\n", rule.target)
 		}
 		return nil
 	}
 
-	// Auto-create parent directory
+	// Auto-create parent directories for all targets
 	if !rule.isTask {
-		dir := filepath.Dir(target)
-		if dir != "." && dir != "" {
-			if !e.dryRun {
-				if err := os.MkdirAll(dir, 0o755); err != nil {
-					return fmt.Errorf("creating directory %q: %w", dir, err)
+		for _, t := range rule.targets {
+			dir := filepath.Dir(t)
+			if dir != "." && dir != "" {
+				if !e.dryRun {
+					if err := os.MkdirAll(dir, 0o755); err != nil {
+						return fmt.Errorf("creating directory %q: %w", dir, err)
+					}
 				}
 			}
 		}
 	}
 
 	// Execute recipe
-	fmt.Fprintf(os.Stderr, "mk: building %q\n", target)
+	fmt.Fprintf(os.Stderr, "mk: building %q\n", rule.target)
 	if e.verbose || e.dryRun {
 		for _, line := range strings.Split(recipeText, "\n") {
 			fmt.Fprintf(os.Stderr, "  %s\n", line)
@@ -89,14 +102,16 @@ func (e *Executor) Build(target string) error {
 	if err := e.runRecipe(recipeText); err != nil {
 		// Delete partial output on failure (for file targets), unless [keep]
 		if !rule.isTask && !rule.keep {
-			os.Remove(target)
+			for _, t := range rule.targets {
+				os.Remove(t)
+			}
 		}
-		return fmt.Errorf("recipe for %q failed: %w", target, err)
+		return fmt.Errorf("recipe for %q failed: %w", rule.target, err)
 	}
 
-	// Record successful build
+	// Record successful build for all outputs
 	if !rule.isTask {
-		e.state.Record(target, rule.prereqs, recipeText)
+		e.state.Record(rule.targets, rule.prereqs, recipeText)
 	}
 
 	return nil
@@ -113,9 +128,9 @@ func (e *Executor) runRecipe(script string) error {
 	return cmd.Run()
 }
 
-func (e *Executor) expandRecipe(rule *resolvedRule, target string) string {
+func (e *Executor) expandRecipe(rule *resolvedRule) string {
 	vars := e.vars.Clone()
-	vars.Set("target", target)
+	vars.Set("target", rule.target)
 	if len(rule.prereqs) > 0 {
 		vars.Set("input", rule.prereqs[0])
 	}
@@ -126,9 +141,9 @@ func (e *Executor) expandRecipe(rule *resolvedRule, target string) string {
 		vars.Set("stem", rule.stem)
 	}
 
-	// Find changed prerequisites
+	// Find changed prerequisites (only normal prereqs)
 	var changed []string
-	ts := e.state.Targets[target]
+	ts := e.state.Targets[rule.target]
 	for _, p := range rule.prereqs {
 		if ts == nil {
 			changed = append(changed, p)

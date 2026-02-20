@@ -140,6 +140,23 @@ build/report: $obj
     $cxx -o $target $inputs
 ```
 
+### Order-only prerequisites
+
+Prerequisites after `|` establish build ordering without triggering
+rebuilds:
+
+```
+build/{name}.o: src/{name}.c | build/
+    $cc $cflags -c $input -o $target
+```
+
+The `build/` directory is created before the recipe runs, but
+changes to it do not make the target stale. Order-only prerequisites
+are excluded from `$inputs`, `$input`, and `$changed`.
+
+Use cases: directory creation, tool installation, any dependency
+where existence matters but content does not.
+
 ---
 
 ## 3. Tasks
@@ -286,7 +303,9 @@ Stored in `.mk/` (like `.git/`). Tracks per target:
   unchanged. No rebuild.
 - **Input fingerprints.** Content hash (SHA-256) of each prerequisite
   at last build time. Modify a file then revert? Hash matches. No
-  rebuild.
+  rebuild. Extract an unchanged file from a new archive? Hash
+  matches. No rebuild. Timestamps lie after git operations, archive
+  extraction, rsync, and CI cache restores; content hashes don't.
 - **Output fingerprint.** Detects targets modified outside the build.
 
 ### Performance
@@ -504,6 +523,8 @@ If no target is specified, mk builds the first non-task rule.
 | `-n` dry run | More accurate with build database |
 | Command-line variable overrides | Same: `mk cc=clang` |
 | Substitution references | `$var:.c=.o` |
+| Order-only prerequisites | Same `\|` syntax: `target: prereqs \| order-only` |
+| Multi-output rules | Same syntax, explicit grouping semantics |
 
 ---
 

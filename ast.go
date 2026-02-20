@@ -29,12 +29,13 @@ const (
 
 // Rule represents a build rule: targets: prerequisites \n recipe.
 type Rule struct {
-	Targets []string
-	Prereqs []string
-	Recipe  []string
-	IsTask  bool // ! prefix
-	Keep    bool // [keep] annotation
-	Line    int
+	Targets          []string
+	Prereqs          []string
+	OrderOnlyPrereqs []string // after |
+	Recipe           []string
+	IsTask           bool // ! prefix
+	Keep             bool // [keep] annotation
+	Line             int
 }
 
 // Include represents an include directive.
