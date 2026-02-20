@@ -205,7 +205,7 @@ config dist:
 
 | Property | Meaning |
 |----------|---------|
-| `excludes <config>` | Mutual exclusion. `mk test:debug:release` is an error. |
+| `excludes <config>` | Mutual exclusion. `mk test:debug+release` is an error. |
 | `requires <target>` | Prerequisite. Ensures the named target has been built before any `:config` builds proceed. |
 | Variable assignments | Override or append to base variables. |
 
@@ -214,15 +214,16 @@ config dist:
 ```
 $ mk test              # base config
 $ mk test:debug        # debug config
-$ mk test:debug:asan   # debug + asan composed
+$ mk test:debug+asan   # debug + asan composed
 $ mk test:dist         # test against distribution build
 ```
 
 ### Composition
 
-Configs stack left-to-right. `test:debug:asan` applies `debug`
-overrides, then `asan` overrides on top. `+=` accumulates; `=`
-from a later config overrides an earlier one.
+`:` separates target from config. `+` combines configs. Configs
+stack left-to-right: `test:debug+asan` applies `debug` overrides,
+then `asan` on top. `+=` accumulates; `=` from a later config
+overrides an earlier one.
 
 ### Build directory
 
@@ -231,7 +232,7 @@ base `builddir`:
 
 ```
 builddir = build
-# mk test:debug:asan → builddir = build-debug-asan
+# mk test:debug+asan → builddir = build-debug-asan
 ```
 
 The build database tracks each config combination independently.
@@ -548,7 +549,7 @@ $builddir/csp_bench: $lib_objs $bench_objs
 ```
 $ mk                     # build + run tests
 $ mk test:asan           # ASan + UBSan
-$ mk test:debug:asan     # debug + ASan
+$ mk test:debug+asan     # debug + ASan
 $ mk test:dist           # test distribution build
 $ mk bench:release -j0   # release benchmarks, all cores
 $ mk clean               # remove everything
