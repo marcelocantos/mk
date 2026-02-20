@@ -26,6 +26,7 @@ type Executor struct {
 	building map[string]*buildResult // singleflight dedup
 	sem      chan struct{}            // recipe concurrency limiter; nil = unlimited
 	outputMu sync.Mutex              // serializes buffered output flushes
+	cache    *HashCache              // file content hash cache
 }
 
 // buildResult tracks the in-progress or completed build of a target.
@@ -56,6 +57,7 @@ func NewExecutor(graph *Graph, state *BuildState, vars *Vars, verbose, force, dr
 		jobs:     jobs,
 		building: make(map[string]*buildResult),
 		sem:      sem,
+		cache:    NewHashCache(),
 	}
 }
 
@@ -121,7 +123,7 @@ func (e *Executor) doBuild(target string, rule *resolvedRule) error {
 	// Check staleness (only normal prereqs affect staleness)
 	recipeText := e.expandRecipe(rule)
 	fingerprint := e.expandFingerprint(rule)
-	if !rule.isTask && !e.force && !e.state.IsStale(rule.targets, rule.prereqs, recipeText, fingerprint) {
+	if !rule.isTask && !e.force && !e.state.IsStale(rule.targets, rule.prereqs, recipeText, fingerprint, e.cache) {
 		if e.verbose {
 			e.outputMu.Lock()
 			fmt.Fprintf(os.Stderr, "mk: %q is up to date\n", rule.target)
@@ -218,7 +220,7 @@ func (e *Executor) executeRecipe(rule *resolvedRule, recipeText, fingerprint str
 
 	// Record successful build for all outputs
 	if !rule.isTask {
-		e.state.Record(rule.targets, rule.prereqs, recipeText, fingerprint)
+		e.state.Record(rule.targets, rule.prereqs, recipeText, fingerprint, e.cache)
 	}
 
 	return nil
@@ -261,7 +263,7 @@ func (e *Executor) expandRecipe(rule *resolvedRule) string {
 			changed = append(changed, p)
 			continue
 		}
-		h, err := hashFile(p)
+		h, err := e.cache.Hash(p)
 		if err != nil || ts.InputHashes[p] != h {
 			changed = append(changed, p)
 		}

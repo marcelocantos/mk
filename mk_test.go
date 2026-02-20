@@ -1038,7 +1038,7 @@ func TestWhyStale(t *testing.T) {
 	state := &BuildState{Targets: make(map[string]*TargetState)}
 
 	// No previous build
-	reasons := state.WhyStale([]string{"foo"}, []string{"bar"}, "recipe", "")
+	reasons := state.WhyStale([]string{"foo"}, []string{"bar"}, "recipe", "", NewHashCache())
 	if len(reasons) != 1 || reasons[0] != "foo: no previous build recorded" {
 		t.Errorf("WhyStale = %v, want [foo: no previous build recorded]", reasons)
 	}
@@ -1389,6 +1389,164 @@ top.txt: bad.txt
 	// top.txt should not have been created
 	if _, err := os.Stat(filepath.Join(dir, "top.txt")); err == nil {
 		t.Error("top.txt should NOT exist (prereq failed)")
+	}
+}
+
+func TestParseFuncDef(t *testing.T) {
+	input := `
+fn objpath(src):
+    return $src:src/%.c=build/%.o
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(f.Stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(f.Stmts))
+	}
+	fn := f.Stmts[0].(FuncDef)
+	if fn.Name != "objpath" {
+		t.Errorf("name = %q, want %q", fn.Name, "objpath")
+	}
+	if len(fn.Params) != 1 || fn.Params[0] != "src" {
+		t.Errorf("params = %v, want [src]", fn.Params)
+	}
+	if fn.Body != "$src:src/%.c=build/%.o" {
+		t.Errorf("body = %q, want %q", fn.Body, "$src:src/%.c=build/%.o")
+	}
+}
+
+func TestUserFuncEval(t *testing.T) {
+	input := `
+fn objpath(src):
+    return $[patsubst src/%.c,build/%.o,$src]
+
+src = src/foo.c src/bar.c
+obj = $[objpath $src]
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := vars.Get("obj"); got != "build/foo.o build/bar.o" {
+		t.Errorf("obj = %q, want %q", got, "build/foo.o build/bar.o")
+	}
+}
+
+func TestUserFuncMultiParam(t *testing.T) {
+	v := NewVars()
+	fn := &FuncDef{Name: "greet", Params: []string{"greeting", "name"}, Body: "$greeting $name!"}
+	v.SetFunc(fn)
+
+	got := v.Expand("$[greet hello world]")
+	if got != "hello world!" {
+		t.Errorf("greet = %q, want %q", got, "hello world!")
+	}
+}
+
+func TestUserFuncLastParamCollectsRest(t *testing.T) {
+	v := NewVars()
+	fn := &FuncDef{Name: "wrap", Params: []string{"tag", "content"}, Body: "<$tag>$content</$tag>"}
+	v.SetFunc(fn)
+
+	got := v.Expand("$[wrap div hello world foo]")
+	if got != "<div>hello world foo</div>" {
+		t.Errorf("wrap = %q, want %q", got, "<div>hello world foo</div>")
+	}
+}
+
+func TestUserFuncInRule(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "input.txt"), []byte("hello"), 0o644)
+
+	mkfile := `
+fn upper(file):
+    return $file.upper
+
+out.txt: input.txt
+    cp $input $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ex := NewExecutor(graph, state, vars, false, false, false, 1)
+	if err := ex.Build("out.txt"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHashCacheReuse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("content"), 0o644)
+
+	cache := NewHashCache()
+
+	h1, err := cache.Hash(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := cache.Hash(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if h1 != h2 {
+		t.Errorf("hash mismatch: %q != %q", h1, h2)
+	}
+
+	// Verify cache has an entry
+	cache.mu.Lock()
+	if _, ok := cache.entries[path]; !ok {
+		t.Error("expected cache entry")
+	}
+	cache.mu.Unlock()
+}
+
+func TestHashCacheInvalidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("content1"), 0o644)
+
+	cache := NewHashCache()
+
+	h1, err := cache.Hash(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Modify the file (changes mtime and possibly size)
+	os.WriteFile(path, []byte("content2-modified"), 0o644)
+
+	h2, err := cache.Hash(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if h1 == h2 {
+		t.Error("hash should differ after file modification")
 	}
 }
 

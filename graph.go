@@ -57,7 +57,7 @@ func (g *Graph) WhyRebuild(target string) ([]string, error) {
 	if fingerprint != "" {
 		fingerprint = vars.Expand(fingerprint)
 	}
-	return g.state.WhyStale(rule.targets, rule.prereqs, recipeText, fingerprint), nil
+	return g.state.WhyStale(rule.targets, rule.prereqs, recipeText, fingerprint, NewHashCache()), nil
 }
 
 type patternRule struct {
@@ -122,6 +122,9 @@ func (g *Graph) evalNode(node Node) error {
 
 	case Include:
 		return g.evalInclude(n)
+
+	case FuncDef:
+		g.vars.SetFunc(&n)
 	}
 
 	return nil

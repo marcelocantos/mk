@@ -115,6 +115,11 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 		return p.parseConditional(trimmed, lineNum)
 	}
 
+	// Function definition
+	if strings.HasPrefix(trimmed, "fn ") {
+		return p.parseFuncDef(trimmed, lineNum)
+	}
+
 	// Lazy variable
 	if rest, ok := strings.CutPrefix(trimmed, "lazy "); ok {
 		if name, value, ok := parseAssign(rest); ok {
@@ -149,6 +154,55 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 	}
 
 	return nil, fmt.Errorf("line %d: unrecognized syntax: %s", lineNum, trimmed)
+}
+
+func (p *parser) parseFuncDef(line string, lineNum int) (Node, error) {
+	// fn name(param1, param2):
+	rest := strings.TrimPrefix(line, "fn ")
+
+	parenOpen := strings.IndexByte(rest, '(')
+	parenClose := strings.IndexByte(rest, ')')
+	if parenOpen < 0 || parenClose < 0 || parenClose < parenOpen {
+		return nil, fmt.Errorf("line %d: invalid function definition: %s", lineNum, line)
+	}
+
+	name := strings.TrimSpace(rest[:parenOpen])
+	paramStr := rest[parenOpen+1 : parenClose]
+
+	var params []string
+	for _, p := range strings.Split(paramStr, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			params = append(params, p)
+		}
+	}
+
+	// Read indented body lines, looking for "return ..."
+	var body string
+	for {
+		bodyLine, ok := p.peek()
+		if !ok {
+			break
+		}
+		if bodyLine == "" {
+			p.pos++
+			continue
+		}
+		if bodyLine[0] != ' ' && bodyLine[0] != '\t' {
+			break
+		}
+		p.pos++
+		trimmed := strings.TrimSpace(bodyLine)
+		if after, ok := strings.CutPrefix(trimmed, "return "); ok {
+			body = strings.TrimSpace(after)
+		}
+	}
+
+	if body == "" {
+		return nil, fmt.Errorf("line %d: function %q has no return statement", lineNum, name)
+	}
+
+	return FuncDef{Name: name, Params: params, Body: body, Line: lineNum}, nil
 }
 
 func (p *parser) parseRecipe() []string {

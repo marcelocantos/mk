@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
 
 const stateDir = ".mk"
@@ -67,7 +68,7 @@ func (s *BuildState) GetTarget(name string) *TargetState {
 // Only normal prereqs (not order-only) affect staleness.
 // If fingerprint is non-empty, it is a shell command whose output replaces
 // the file-stat check for the target.
-func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText, fingerprint string) bool {
+func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText, fingerprint string, cache *HashCache) bool {
 	// Snapshot state under read lock, then release before I/O
 	s.mu.RLock()
 	snapshots := make([]*TargetState, len(targets))
@@ -116,7 +117,7 @@ func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText, fin
 
 			// Check input content hashes
 			for _, p := range prereqs {
-				h, err := hashFile(p)
+				h, err := cache.Hash(p)
 				if err != nil {
 					return true
 				}
@@ -131,7 +132,7 @@ func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText, fin
 }
 
 // WhyStale returns human-readable reasons why any of the targets are stale.
-func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText, fingerprint string) []string {
+func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText, fingerprint string, cache *HashCache) []string {
 	s.mu.RLock()
 	snapshots := make([]*TargetState, len(targets))
 	for i, t := range targets {
@@ -176,7 +177,7 @@ func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText, fi
 			}
 
 			for _, p := range prereqs {
-				h, err := hashFile(p)
+				h, err := cache.Hash(p)
 				if err != nil {
 					reasons = append(reasons, fmt.Sprintf("cannot hash prerequisite %q: %v", p, err))
 					continue
@@ -192,7 +193,7 @@ func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText, fi
 }
 
 // Record records a successful build for all targets.
-func (s *BuildState) Record(targets []string, prereqs []string, recipeText, fingerprint string) {
+func (s *BuildState) Record(targets []string, prereqs []string, recipeText, fingerprint string, cache *HashCache) {
 	// Build TargetState objects (I/O: hashing) without holding the lock.
 	states := make(map[string]*TargetState, len(targets))
 	for _, target := range targets {
@@ -202,7 +203,7 @@ func (s *BuildState) Record(targets []string, prereqs []string, recipeText, fing
 			Prereqs:     prereqs,
 		}
 		for _, p := range prereqs {
-			h, err := hashFile(p)
+			h, err := cache.Hash(p)
 			if err == nil {
 				ts.InputHashes[p] = h
 			}
@@ -212,7 +213,7 @@ func (s *BuildState) Record(targets []string, prereqs []string, recipeText, fing
 				ts.FingerprintHash = fph
 			}
 		} else {
-			if h, err := hashFile(target); err == nil {
+			if h, err := cache.Hash(target); err == nil {
 				ts.OutputHash = h
 			}
 		}
@@ -237,6 +238,52 @@ func runFingerprint(command string) (string, error) {
 		return "", fmt.Errorf("fingerprint command %q: %w", command, err)
 	}
 	return hashString(out.String()), nil
+}
+
+// HashCache caches file content hashes using (path, mtime, size) as cache key.
+// Thread-safe for concurrent use.
+type HashCache struct {
+	mu      sync.Mutex
+	entries map[string]cacheEntry
+}
+
+type cacheEntry struct {
+	mtime time.Time
+	size  int64
+	hash  string
+}
+
+func NewHashCache() *HashCache {
+	return &HashCache{entries: make(map[string]cacheEntry)}
+}
+
+// Hash returns the content hash of the file at path, using the cache
+// when the file's mtime and size haven't changed.
+func (c *HashCache) Hash(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	mtime := info.ModTime()
+	size := info.Size()
+
+	c.mu.Lock()
+	if e, ok := c.entries[path]; ok && e.mtime.Equal(mtime) && e.size == size {
+		c.mu.Unlock()
+		return e.hash, nil
+	}
+	c.mu.Unlock()
+
+	h, err := hashFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	c.mu.Lock()
+	c.entries[path] = cacheEntry{mtime: mtime, size: size, hash: h}
+	c.mu.Unlock()
+
+	return h, nil
 }
 
 func hashFile(path string) (string, error) {

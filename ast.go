@@ -60,7 +60,16 @@ type CondBranch struct {
 	Body  []Node
 }
 
+// FuncDef represents a user-defined function: fn name(params): return expr.
+type FuncDef struct {
+	Name   string
+	Params []string // parameter names
+	Body   string   // the return expression
+	Line   int
+}
+
 func (VarAssign) node()   {}
 func (Rule) node()        {}
 func (Include) node()     {}
 func (Conditional) node() {}
+func (FuncDef) node()     {}

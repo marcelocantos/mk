@@ -10,14 +10,16 @@ import (
 
 // Vars is a variable store. All variables are also environment variables.
 type Vars struct {
-	vals map[string]string
-	lazy map[string]string // unevaluated lazy expressions
+	vals  map[string]string
+	lazy  map[string]string    // unevaluated lazy expressions
+	funcs map[string]*FuncDef  // user-defined functions
 }
 
 func NewVars() *Vars {
 	v := &Vars{
-		vals: make(map[string]string),
-		lazy: make(map[string]string),
+		vals:  make(map[string]string),
+		lazy:  make(map[string]string),
+		funcs: make(map[string]*FuncDef),
 	}
 	// Import environment
 	for _, env := range os.Environ() {
@@ -33,6 +35,11 @@ func NewVars() *Vars {
 func (v *Vars) Set(name, value string) {
 	v.vals[name] = value
 	delete(v.lazy, name)
+}
+
+// SetFunc registers a user-defined function.
+func (v *Vars) SetFunc(def *FuncDef) {
+	v.funcs[def.Name] = def
 }
 
 // SetLazy sets a variable for deferred evaluation.
@@ -233,14 +240,18 @@ func (v *Vars) Snapshot() map[string]string {
 // Clone creates a copy of the variable store.
 func (v *Vars) Clone() *Vars {
 	c := &Vars{
-		vals: make(map[string]string, len(v.vals)),
-		lazy: make(map[string]string, len(v.lazy)),
+		vals:  make(map[string]string, len(v.vals)),
+		lazy:  make(map[string]string, len(v.lazy)),
+		funcs: make(map[string]*FuncDef, len(v.funcs)),
 	}
 	for k, val := range v.vals {
 		c.vals[k] = val
 	}
 	for k, val := range v.lazy {
 		c.lazy[k] = val
+	}
+	for k, val := range v.funcs {
+		c.funcs[k] = val
 	}
 	return c
 }
@@ -285,8 +296,37 @@ func (v *Vars) evalFunc(inner string) string {
 	case "if":
 		return v.funcIf(strings.TrimSpace(args))
 	default:
+		// Check user-defined functions
+		if fn, ok := v.funcs[name]; ok {
+			return v.callUserFunc(fn, strings.TrimSpace(args))
+		}
 		return ""
 	}
+}
+
+func (v *Vars) callUserFunc(fn *FuncDef, args string) string {
+	// Expand arguments before binding to parameters
+	expanded := v.Expand(args)
+
+	// Split expanded args into words, one per parameter
+	words := strings.Fields(expanded)
+
+	// Create a child scope with parameters bound
+	child := v.Clone()
+	for i, param := range fn.Params {
+		if i < len(words) {
+			child.Set(param, words[i])
+		} else {
+			child.Set(param, "")
+		}
+	}
+	// If more words than params, join remaining into last param
+	if len(fn.Params) > 0 && len(words) > len(fn.Params) {
+		last := len(fn.Params) - 1
+		child.Set(fn.Params[last], strings.Join(words[last:], " "))
+	}
+
+	return child.Expand(fn.Body)
 }
 
 func (v *Vars) funcWildcard(pattern string) string {
