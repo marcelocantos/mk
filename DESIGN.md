@@ -411,12 +411,78 @@ for config in $configs:
 
 ```
 include std/c.mk              # opt-in standard rules
-include lib/build.mk as lib   # scoped: lib.obj, lib.cflags, etc.
+include lib/mkfile as lib     # scoped: lib.obj, lib.cflags, etc.
 include common.mk             # unscoped paste
+include {path}/mkfile as {path}   # auto-discover subdirectory mkfiles
 ```
 
-Scoped includes prevent variable pollution. All variables and rules
-from the included file live under the alias prefix.
+### Unscoped includes
+
+`include common.mk` pastes the file's contents into the current
+scope. Variables and rules merge directly — same as C `#include`.
+
+### Scoped includes
+
+`include lib/mkfile as lib` includes the file with isolation:
+
+- **Variable scoping.** The child's assignments live under the alias
+  prefix. The child's `src = foo.c bar.c` becomes `lib.src` from
+  the parent's perspective. The child inherits the parent's
+  variables as defaults (`$cc`, `$cflags`) but its own assignments
+  do not leak back.
+
+- **Path rebasing.** Targets and prerequisites declared in the child
+  are rebased relative to the child's directory. The child writes
+  `build/libfoo.a`; mk inserts `lib/build/libfoo.a` into the
+  global graph. Cross-references between siblings use relative
+  paths: `../lib/build/libfoo.a` from `app/mkfile` resolves to
+  `lib/build/libfoo.a` in the global graph.
+
+- **Single graph.** All scoped includes merge into one dependency
+  DAG. There is no subprocess boundary, no opaque `$(MAKE)` call.
+  mk sees every target and every dependency across the entire
+  project, enabling correct incremental builds, parallel execution
+  across directory boundaries, and accurate `--why` diagnostics.
+
+### Pattern discovery
+
+```
+include {path}/mkfile as {path}
+```
+
+The `{path}` capture globs across directories. Each matching
+`mkfile` is included with its directory as the scope name. This
+is the primary mechanism for multi-directory projects:
+
+```
+# root mkfile
+cc = clang
+cflags = -Wall -O2
+
+include {path}/mkfile as {path}
+
+build/app: lib/build/libfoo.a app/build/main.o
+    $cc -o $target $inputs
+```
+
+```
+# lib/mkfile — sees $cc from parent
+src = foo.c bar.c
+obj = $[patsubst %.c,build/%.o,$src]
+
+build/libfoo.a: $obj
+    ar rcs $target $inputs
+
+build/{name}.o: {name}.c
+    $cc $cflags -c $input -o $target
+```
+
+After inclusion, the global graph contains targets
+`lib/build/libfoo.a`, `lib/build/foo.o`, `lib/build/bar.o`, etc.
+The root mkfile references them by their rebased file paths. The
+variable `$lib.src` is `foo.c bar.c`.
+
+### Standard library
 
 The standard library (`std/`) provides conventional rules for common
 languages:
@@ -496,7 +562,7 @@ If no target is specified, mk builds the first non-task rule.
 | `$(eval)` | `for` loops + `fn` |
 | `define`/`endef` | `fn` |
 | `$(call func,$(1),$(2))` | `$[func arg1 arg2]` with named params |
-| `$(MAKE)` recursive make | Configs (`:config`), scoped includes |
+| `$(MAKE)` recursive make | Scoped includes build a single graph — no subprocess boundary |
 | Double-colon rules | Removed |
 | Archive members `lib(member)` | Removed |
 | `-include *.d` dependency ritual | Build database tracks deps |
@@ -519,7 +585,7 @@ If no target is specified, mk builds the first non-task rule.
 | Parallel execution (`-j`) | Same |
 | `@` / `-` recipe prefixes | Same |
 | `$[wildcard]`, `$[shell]`, `$[patsubst]` | `$[...]` syntax, same semantics |
-| `include` | Extended with `as` scoping |
+| `include` | Extended with `as` scoping, path rebasing, pattern discovery |
 | `-n` dry run | More accurate with build database |
 | Command-line variable overrides | Same: `mk cc=clang` |
 | Substitution references | `$var:.c=.o` |
