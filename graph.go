@@ -24,6 +24,7 @@ type resolvedRule struct {
 	recipe           []string
 	isTask           bool
 	keep             bool   // [keep] annotation — don't delete on error
+	fingerprint      string // [fingerprint: command] for non-file artifacts
 	stem             string // first capture value from pattern match
 }
 
@@ -52,7 +53,11 @@ func (g *Graph) WhyRebuild(target string) ([]string, error) {
 		lines = append(lines, vars.Expand(l))
 	}
 	recipeText := strings.Join(lines, "\n")
-	return g.state.WhyStale(rule.targets, rule.prereqs, recipeText), nil
+	fingerprint := rule.fingerprint
+	if fingerprint != "" {
+		fingerprint = vars.Expand(fingerprint)
+	}
+	return g.state.WhyStale(rule.targets, rule.prereqs, recipeText, fingerprint), nil
 }
 
 type patternRule struct {
@@ -61,6 +66,7 @@ type patternRule struct {
 	orderOnlyPrereqPatterns []Pattern
 	recipe                 []string
 	keep                   bool
+	fingerprint            string
 }
 
 // BuildGraph constructs a dependency graph from a parsed file.
@@ -163,7 +169,7 @@ func (g *Graph) addRule(r Rule) error {
 	}
 
 	if isPattern {
-		pr := patternRule{recipe: r.Recipe, keep: r.Keep}
+		pr := patternRule{recipe: r.Recipe, keep: r.Keep, fingerprint: r.Fingerprint}
 		for _, t := range expandedTargets {
 			p, _ := ParsePattern(t)
 			pr.targetPatterns = append(pr.targetPatterns, p)
@@ -187,6 +193,7 @@ func (g *Graph) addRule(r Rule) error {
 			recipe:           r.Recipe,
 			isTask:           r.IsTask,
 			keep:             r.Keep,
+			fingerprint:      r.Fingerprint,
 		})
 	}
 
@@ -369,6 +376,12 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 				stem = captures[tp.Captures[0]]
 			}
 
+			// Expand captures in fingerprint command
+			fp := pr.fingerprint
+			for k, v := range captures {
+				fp = strings.ReplaceAll(fp, "{"+k+"}", v)
+			}
+
 			r := &resolvedRule{
 				target:           targets[0],
 				targets:          targets,
@@ -376,6 +389,7 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 				orderOnlyPrereqs: orderOnly,
 				recipe:           recipe,
 				keep:             pr.keep,
+				fingerprint:      fp,
 				stem:             stem,
 			}
 			return r, nil

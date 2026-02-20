@@ -134,7 +134,7 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 	}
 
 	// Rule or task
-	if isTask, keep, targets, prereqs, orderOnly, ok := parseRuleHeader(trimmed); ok {
+	if isTask, keep, fingerprint, targets, prereqs, orderOnly, ok := parseRuleHeader(trimmed); ok {
 		recipe := p.parseRecipe()
 		return Rule{
 			Targets:          targets,
@@ -143,6 +143,7 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 			Recipe:           recipe,
 			IsTask:           isTask,
 			Keep:             keep,
+			Fingerprint:      fingerprint,
 			Line:             lineNum,
 		}, nil
 	}
@@ -257,28 +258,53 @@ func parseAppend(line string) (string, string, bool) {
 	return "", "", false
 }
 
-func parseRuleHeader(line string) (isTask, keep bool, targets, prereqs, orderOnlyPrereqs []string, ok bool) {
+func parseRuleHeader(line string) (isTask, keep bool, fingerprint string, targets, prereqs, orderOnlyPrereqs []string, ok bool) {
 	if strings.HasPrefix(line, "!") {
 		isTask = true
 		line = line[1:]
 	}
 
-	colonIdx := strings.IndexByte(line, ':')
+	// Find the rule-separating colon, skipping colons inside [...] brackets
+	colonIdx := -1
+	depth := 0
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+		case ':':
+			if depth == 0 {
+				colonIdx = i
+				goto found
+			}
+		}
+	}
+found:
 	if colonIdx < 0 {
-		return false, false, nil, nil, nil, false
+		return false, false, "", nil, nil, nil, false
 	}
 
 	targetStr := strings.TrimSpace(line[:colonIdx])
 	prereqStr := strings.TrimSpace(line[colonIdx+1:])
 
 	if targetStr == "" {
-		return false, false, nil, nil, nil, false
+		return false, false, "", nil, nil, nil, false
+	}
+
+	// Extract [fingerprint: ...] annotation
+	if idx := strings.Index(targetStr, "[fingerprint:"); idx >= 0 {
+		end := strings.Index(targetStr[idx:], "]")
+		if end >= 0 {
+			fingerprint = strings.TrimSpace(targetStr[idx+len("[fingerprint:") : idx+end])
+			targetStr = strings.TrimSpace(targetStr[:idx] + targetStr[idx+end+1:])
+		}
 	}
 
 	// Check for [keep] annotation
-	if strings.HasSuffix(targetStr, "[keep]") {
+	if idx := strings.Index(targetStr, "[keep]"); idx >= 0 {
 		keep = true
-		targetStr = strings.TrimSpace(strings.TrimSuffix(targetStr, "[keep]"))
+		targetStr = strings.TrimSpace(targetStr[:idx] + targetStr[idx+len("[keep]"):])
 	}
 
 	targets = strings.Fields(targetStr)
@@ -292,7 +318,7 @@ func parseRuleHeader(line string) (isTask, keep bool, targets, prereqs, orderOnl
 		orderOnlyPrereqs = strings.Fields(s)
 	}
 
-	return isTask, keep, targets, prereqs, orderOnlyPrereqs, true
+	return isTask, keep, fingerprint, targets, prereqs, orderOnlyPrereqs, true
 }
 
 func parseInclude(line string, lineNum int) (Node, error) {

@@ -33,8 +33,9 @@ type Rule struct {
 	Prereqs          []string
 	OrderOnlyPrereqs []string // after |
 	Recipe           []string
-	IsTask           bool // ! prefix
-	Keep             bool // [keep] annotation
+	IsTask           bool   // ! prefix
+	Keep             bool   // [keep] annotation
+	Fingerprint      string // [fingerprint: command] for non-file artifacts
 	Line             int
 }
 

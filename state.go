@@ -1,12 +1,14 @@
 package mk
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 )
@@ -21,10 +23,11 @@ type BuildState struct {
 
 // TargetState records the state of a target at its last successful build.
 type TargetState struct {
-	RecipeHash  string            `json:"recipe_hash"`
-	InputHashes map[string]string `json:"input_hashes"` // prereq path → content hash
-	OutputHash  string            `json:"output_hash"`
-	Prereqs     []string          `json:"prereqs"`
+	RecipeHash      string            `json:"recipe_hash"`
+	InputHashes     map[string]string `json:"input_hashes"`                // prereq path → content hash
+	OutputHash      string            `json:"output_hash"`
+	FingerprintHash string            `json:"fingerprint_hash,omitempty"` // hash of fingerprint command output
+	Prereqs         []string          `json:"prereqs"`
 }
 
 func LoadState() *BuildState {
@@ -53,15 +56,12 @@ func (s *BuildState) Save() error {
 
 // IsStale determines if any of the targets need rebuilding.
 // Only normal prereqs (not order-only) affect staleness.
-func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText string) bool {
+// If fingerprint is non-empty, it is a shell command whose output replaces
+// the file-stat check for the target.
+func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText, fingerprint string) bool {
 	for _, target := range targets {
 		ts := s.Targets[target]
 		if ts == nil {
-			return true
-		}
-
-		// Check if target file exists (for file targets)
-		if _, err := os.Stat(target); os.IsNotExist(err) {
 			return true
 		}
 
@@ -71,25 +71,42 @@ func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText stri
 			return true
 		}
 
-		// Check prerequisite set changed
-		sortedPrereqs := make([]string, len(prereqs))
-		copy(sortedPrereqs, prereqs)
-		sort.Strings(sortedPrereqs)
-		sortedOld := make([]string, len(ts.Prereqs))
-		copy(sortedOld, ts.Prereqs)
-		sort.Strings(sortedOld)
-		if !stringSliceEqual(sortedPrereqs, sortedOld) {
-			return true
-		}
-
-		// Check input content hashes
-		for _, p := range prereqs {
-			h, err := hashFile(p)
+		if fingerprint != "" {
+			// Fingerprint mode: the fingerprint command output replaces
+			// both target-file and prerequisite-hash checks.
+			fph, err := runFingerprint(fingerprint)
 			if err != nil {
 				return true
 			}
-			if ts.InputHashes[p] != h {
+			if ts.FingerprintHash != fph {
 				return true
+			}
+		} else {
+			// File mode: check target exists and prereq hashes.
+			if _, err := os.Stat(target); os.IsNotExist(err) {
+				return true
+			}
+
+			// Check prerequisite set changed
+			sortedPrereqs := make([]string, len(prereqs))
+			copy(sortedPrereqs, prereqs)
+			sort.Strings(sortedPrereqs)
+			sortedOld := make([]string, len(ts.Prereqs))
+			copy(sortedOld, ts.Prereqs)
+			sort.Strings(sortedOld)
+			if !stringSliceEqual(sortedPrereqs, sortedOld) {
+				return true
+			}
+
+			// Check input content hashes
+			for _, p := range prereqs {
+				h, err := hashFile(p)
+				if err != nil {
+					return true
+				}
+				if ts.InputHashes[p] != h {
+					return true
+				}
 			}
 		}
 	}
@@ -98,7 +115,7 @@ func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText stri
 }
 
 // WhyStale returns human-readable reasons why any of the targets are stale.
-func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText string) []string {
+func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText, fingerprint string) []string {
 	var reasons []string
 
 	for _, target := range targets {
@@ -108,33 +125,42 @@ func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText str
 			continue
 		}
 
-		if _, err := os.Stat(target); os.IsNotExist(err) {
-			reasons = append(reasons, fmt.Sprintf("%s: target file does not exist", target))
-		}
-
 		rh := hashString(recipeText)
 		if ts.RecipeHash != rh {
 			reasons = append(reasons, "recipe has changed")
 		}
 
-		sortedPrereqs := make([]string, len(prereqs))
-		copy(sortedPrereqs, prereqs)
-		sort.Strings(sortedPrereqs)
-		sortedOld := make([]string, len(ts.Prereqs))
-		copy(sortedOld, ts.Prereqs)
-		sort.Strings(sortedOld)
-		if !stringSliceEqual(sortedPrereqs, sortedOld) {
-			reasons = append(reasons, "prerequisite set has changed")
-		}
-
-		for _, p := range prereqs {
-			h, err := hashFile(p)
+		if fingerprint != "" {
+			fph, err := runFingerprint(fingerprint)
 			if err != nil {
-				reasons = append(reasons, fmt.Sprintf("cannot hash prerequisite %q: %v", p, err))
-				continue
+				reasons = append(reasons, fmt.Sprintf("%s: fingerprint command failed: %v", target, err))
+			} else if ts.FingerprintHash != fph {
+				reasons = append(reasons, fmt.Sprintf("%s: fingerprint has changed", target))
 			}
-			if ts.InputHashes[p] != h {
-				reasons = append(reasons, fmt.Sprintf("prerequisite %q has changed", p))
+		} else {
+			if _, err := os.Stat(target); os.IsNotExist(err) {
+				reasons = append(reasons, fmt.Sprintf("%s: target file does not exist", target))
+			}
+
+			sortedPrereqs := make([]string, len(prereqs))
+			copy(sortedPrereqs, prereqs)
+			sort.Strings(sortedPrereqs)
+			sortedOld := make([]string, len(ts.Prereqs))
+			copy(sortedOld, ts.Prereqs)
+			sort.Strings(sortedOld)
+			if !stringSliceEqual(sortedPrereqs, sortedOld) {
+				reasons = append(reasons, "prerequisite set has changed")
+			}
+
+			for _, p := range prereqs {
+				h, err := hashFile(p)
+				if err != nil {
+					reasons = append(reasons, fmt.Sprintf("cannot hash prerequisite %q: %v", p, err))
+					continue
+				}
+				if ts.InputHashes[p] != h {
+					reasons = append(reasons, fmt.Sprintf("prerequisite %q has changed", p))
+				}
 			}
 		}
 	}
@@ -143,7 +169,7 @@ func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText str
 }
 
 // Record records a successful build for all targets.
-func (s *BuildState) Record(targets []string, prereqs []string, recipeText string) {
+func (s *BuildState) Record(targets []string, prereqs []string, recipeText, fingerprint string) {
 	for _, target := range targets {
 		ts := &TargetState{
 			RecipeHash:  hashString(recipeText),
@@ -156,11 +182,29 @@ func (s *BuildState) Record(targets []string, prereqs []string, recipeText strin
 				ts.InputHashes[p] = h
 			}
 		}
-		if h, err := hashFile(target); err == nil {
-			ts.OutputHash = h
+		if fingerprint != "" {
+			if fph, err := runFingerprint(fingerprint); err == nil {
+				ts.FingerprintHash = fph
+			}
+		} else {
+			if h, err := hashFile(target); err == nil {
+				ts.OutputHash = h
+			}
 		}
 		s.Targets[target] = ts
 	}
+}
+
+// runFingerprint executes the fingerprint command and returns the hash of its output.
+func runFingerprint(command string) (string, error) {
+	cmd := exec.Command("sh", "-c", command)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("fingerprint command %q: %w", command, err)
+	}
+	return hashString(out.String()), nil
 }
 
 func hashFile(path string) (string, error) {

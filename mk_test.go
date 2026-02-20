@@ -3,6 +3,7 @@ package mk
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1037,8 +1038,178 @@ func TestWhyStale(t *testing.T) {
 	state := &BuildState{Targets: make(map[string]*TargetState)}
 
 	// No previous build
-	reasons := state.WhyStale([]string{"foo"}, []string{"bar"}, "recipe")
+	reasons := state.WhyStale([]string{"foo"}, []string{"bar"}, "recipe", "")
 	if len(reasons) != 1 || reasons[0] != "foo: no previous build recorded" {
 		t.Errorf("WhyStale = %v, want [foo: no previous build recorded]", reasons)
+	}
+}
+
+func TestParseFingerprint(t *testing.T) {
+	input := `
+extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archive.tar.gz
+    tar xf $input -C extracted/
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.Stmts[0].(Rule)
+	if r.Fingerprint != "tar xf archive.tar.gz -O config.json" {
+		t.Errorf("fingerprint = %q, want %q", r.Fingerprint, "tar xf archive.tar.gz -O config.json")
+	}
+	if r.Targets[0] != "extracted/config.json" {
+		t.Errorf("target = %q, want %q", r.Targets[0], "extracted/config.json")
+	}
+}
+
+func TestParseFingerprintAndKeep(t *testing.T) {
+	input := `
+app.img [keep] [fingerprint: docker inspect myapp]: Dockerfile
+    docker build -t myapp .
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.Stmts[0].(Rule)
+	if !r.Keep {
+		t.Error("expected [keep]")
+	}
+	if r.Fingerprint != "docker inspect myapp" {
+		t.Errorf("fingerprint = %q, want %q", r.Fingerprint, "docker inspect myapp")
+	}
+	if r.Targets[0] != "app.img" {
+		t.Errorf("target = %q, want %q", r.Targets[0], "app.img")
+	}
+}
+
+func TestFingerprintStaleness(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	// Create two files to put in the tarball
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"version": 1}`), 0o644)
+	os.WriteFile(filepath.Join(dir, "other.txt"), []byte("other"), 0o644)
+
+	// Create the initial tarball
+	createTarball(t, dir, "archive.tar.gz", []string{"config.json", "other.txt"})
+
+	// mkfile: extract config.json from tarball, using fingerprint to track
+	// only config.json's content within the archive
+	mkfile := `
+extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archive.tar.gz
+    mkdir -p extracted
+    tar xf $input -C extracted/ config.json
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First build
+	exec := NewExecutor(graph, state, vars, false, false, false)
+	if err := exec.Build("extracted/config.json"); err != nil {
+		t.Fatal(err)
+	}
+	state.Save()
+
+	// Verify extracted content
+	got, _ := os.ReadFile(filepath.Join(dir, "extracted", "config.json"))
+	if string(got) != `{"version": 1}` {
+		t.Fatalf("extracted config = %q, want %q", string(got), `{"version": 1}`)
+	}
+
+	// --- Modify other.txt (not config.json) and recreate tarball ---
+	os.WriteFile(filepath.Join(dir, "other.txt"), []byte("other-modified"), 0o644)
+	createTarball(t, dir, "archive.tar.gz", []string{"config.json", "other.txt"})
+
+	// Write a sentinel to detect if recipe re-runs
+	os.WriteFile(filepath.Join(dir, "extracted", "config.json"), []byte("sentinel"), 0o644)
+
+	// Reload state and rebuild — should NOT rebuild (fingerprint unchanged)
+	state = LoadState()
+	graph, err = BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec = NewExecutor(graph, state, vars, false, false, false)
+	if err := exec.Build("extracted/config.json"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ = os.ReadFile(filepath.Join(dir, "extracted", "config.json"))
+	if string(got) != "sentinel" {
+		t.Errorf("recipe should NOT have re-run (fingerprint unchanged), but config = %q", string(got))
+	}
+
+	// --- Now modify config.json and recreate tarball ---
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"version": 2}`), 0o644)
+	createTarball(t, dir, "archive.tar.gz", []string{"config.json", "other.txt"})
+
+	// Reload state and rebuild — SHOULD rebuild (fingerprint changed)
+	state = LoadState()
+	graph, err = BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec = NewExecutor(graph, state, vars, false, false, false)
+	if err := exec.Build("extracted/config.json"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ = os.ReadFile(filepath.Join(dir, "extracted", "config.json"))
+	if string(got) != `{"version": 2}` {
+		t.Errorf("recipe SHOULD have re-run (fingerprint changed), but config = %q", string(got))
+	}
+}
+
+func TestFingerprintPropagation(t *testing.T) {
+	input := `
+extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archive.tar.gz
+    tar xf $input -C extracted/
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rule, err := graph.Resolve("extracted/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.fingerprint != "tar xf archive.tar.gz -O config.json" {
+		t.Errorf("fingerprint = %q, want %q", rule.fingerprint, "tar xf archive.tar.gz -O config.json")
+	}
+}
+
+// createTarball creates a .tar.gz from the given files in the directory.
+func createTarball(t *testing.T, dir, name string, files []string) {
+	t.Helper()
+	args := append([]string{"czf", filepath.Join(dir, name), "-C", dir}, files...)
+	cmd := fmt.Sprintf("tar %s", strings.Join(args, " "))
+	c := exec.Command("sh", "-c", cmd)
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("creating tarball: %s: %v", string(out), err)
 	}
 }

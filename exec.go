@@ -68,7 +68,8 @@ func (e *Executor) Build(target string) error {
 
 	// Check staleness (only normal prereqs affect staleness)
 	recipeText := e.expandRecipe(rule)
-	if !rule.isTask && !e.force && !e.state.IsStale(rule.targets, rule.prereqs, recipeText) {
+	fingerprint := e.expandFingerprint(rule)
+	if !rule.isTask && !e.force && !e.state.IsStale(rule.targets, rule.prereqs, recipeText, fingerprint) {
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "mk: %q is up to date\n", rule.target)
 		}
@@ -111,7 +112,7 @@ func (e *Executor) Build(target string) error {
 
 	// Record successful build for all outputs
 	if !rule.isTask {
-		e.state.Record(rule.targets, rule.prereqs, recipeText)
+		e.state.Record(rule.targets, rule.prereqs, recipeText, fingerprint)
 	}
 
 	return nil
@@ -126,6 +127,22 @@ func (e *Executor) runRecipe(script string) error {
 	cmd.Env = e.vars.Environ()
 
 	return cmd.Run()
+}
+
+func (e *Executor) expandFingerprint(rule *resolvedRule) string {
+	if rule.fingerprint == "" {
+		return ""
+	}
+	vars := e.vars.Clone()
+	vars.Set("target", rule.target)
+	if len(rule.prereqs) > 0 {
+		vars.Set("input", rule.prereqs[0])
+	}
+	vars.Set("inputs", strings.Join(rule.prereqs, " "))
+	if rule.stem != "" {
+		vars.Set("stem", rule.stem)
+	}
+	return vars.Expand(rule.fingerprint)
 }
 
 func (e *Executor) expandRecipe(rule *resolvedRule) string {
