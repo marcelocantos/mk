@@ -186,6 +186,7 @@ func (g *Graph) evaluate(stmts []Node) error {
 func (g *Graph) evalNode(node Node) error {
 	switch n := node.(type) {
 	case VarAssign:
+		name := g.vars.Expand(n.Name)
 		value := n.Value
 		if !n.Lazy {
 			value = g.vars.Expand(value)
@@ -193,15 +194,15 @@ func (g *Graph) evalNode(node Node) error {
 		switch n.Op {
 		case OpSet:
 			if n.Lazy {
-				g.vars.SetLazy(n.Name, n.Value)
+				g.vars.SetLazy(name, n.Value)
 			} else {
-				g.vars.Set(n.Name, value)
+				g.vars.Set(name, value)
 			}
 		case OpAppend:
-			g.vars.Append(n.Name, g.vars.Expand(n.Value))
+			g.vars.Append(name, g.vars.Expand(n.Value))
 		case OpCondSet:
-			if g.vars.Get(n.Name) == "" {
-				g.vars.Set(n.Name, value)
+			if g.vars.Get(name) == "" {
+				g.vars.Set(name, value)
 			}
 		}
 
@@ -219,8 +220,23 @@ func (g *Graph) evalNode(node Node) error {
 
 	case ConfigDef:
 		g.configs[n.Name] = &n
+
+	case Loop:
+		return g.evalLoop(n)
 	}
 
+	return nil
+}
+
+func (g *Graph) evalLoop(loop Loop) error {
+	listStr := g.vars.Expand(loop.List)
+	items := strings.Fields(listStr)
+	for _, item := range items {
+		g.vars.Set(loop.Var, item)
+		if err := g.evaluate(loop.Body); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

@@ -77,9 +77,18 @@ type ConfigDef struct {
 	Line     int
 }
 
+// Loop represents a for loop: for var in list: ... end
+type Loop struct {
+	Var  string // loop variable name
+	List string // list expression (unexpanded)
+	Body []Node // statements to repeat
+	Line int
+}
+
 func (VarAssign) node()   {}
 func (Rule) node()        {}
 func (Include) node()     {}
 func (Conditional) node() {}
 func (FuncDef) node()     {}
 func (ConfigDef) node()   {}
+func (Loop) node()        {}

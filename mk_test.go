@@ -1837,6 +1837,206 @@ config dist:
 	}
 }
 
+func TestParseLoop(t *testing.T) {
+	input := `
+configs = debug release
+
+for config in $configs:
+    cflags_$config = -D$config
+end
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(f.Stmts) != 2 {
+		t.Fatalf("expected 2 statements, got %d", len(f.Stmts))
+	}
+
+	loop := f.Stmts[1].(Loop)
+	if loop.Var != "config" {
+		t.Errorf("var = %q, want %q", loop.Var, "config")
+	}
+	if loop.List != "$configs" {
+		t.Errorf("list = %q, want %q", loop.List, "$configs")
+	}
+	if len(loop.Body) != 1 {
+		t.Fatalf("expected 1 body statement, got %d", len(loop.Body))
+	}
+	assign := loop.Body[0].(VarAssign)
+	if assign.Name != "cflags_$config" {
+		t.Errorf("body var name = %q, want %q", assign.Name, "cflags_$config")
+	}
+}
+
+func TestLoopVarExpansion(t *testing.T) {
+	input := `
+configs = debug release
+
+for config in $configs:
+    cflags_$config = -D$config
+end
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := vars.Get("cflags_debug"); got != "-Ddebug" {
+		t.Errorf("cflags_debug = %q, want %q", got, "-Ddebug")
+	}
+	if got := vars.Get("cflags_release"); got != "-Drelease" {
+		t.Errorf("cflags_release = %q, want %q", got, "-Drelease")
+	}
+}
+
+func TestLoopRuleGeneration(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "src.c"), []byte("int main() {}"), 0o644)
+
+	mkfile := `
+archs = x86 arm
+
+for arch in $archs:
+    build_$arch: src.c
+        echo $arch > $target
+end
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both rules should be resolvable
+	rule1, err := graph.Resolve("build_x86")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule1.target != "build_x86" {
+		t.Errorf("target = %q, want %q", rule1.target, "build_x86")
+	}
+
+	rule2, err := graph.Resolve("build_arm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule2.target != "build_arm" {
+		t.Errorf("target = %q, want %q", rule2.target, "build_arm")
+	}
+}
+
+func TestLoopNested(t *testing.T) {
+	input := `
+archs = x86 arm
+configs = debug release
+
+for arch in $archs:
+    for config in $configs:
+        flags_${arch}_$config = -march=$arch -D$config
+    end
+end
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string]string{
+		"flags_x86_debug":   "-march=x86 -Ddebug",
+		"flags_x86_release": "-march=x86 -Drelease",
+		"flags_arm_debug":   "-march=arm -Ddebug",
+		"flags_arm_release": "-march=arm -Drelease",
+	}
+	for name, want := range cases {
+		if got := vars.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestLoopConditional(t *testing.T) {
+	input := `
+configs = debug release
+
+for config in $configs:
+    if $config == debug
+        opt_$config = -O0
+    else
+        opt_$config = -O2
+    end
+end
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := vars.Get("opt_debug"); got != "-O0" {
+		t.Errorf("opt_debug = %q, want %q", got, "-O0")
+	}
+	if got := vars.Get("opt_release"); got != "-O2" {
+		t.Errorf("opt_release = %q, want %q", got, "-O2")
+	}
+}
+
+func TestLoopEmptyList(t *testing.T) {
+	input := `
+empty =
+
+for x in $empty:
+    should_not_exist = true
+end
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := vars.Get("should_not_exist"); got != "" {
+		t.Errorf("should_not_exist = %q, want empty (loop should not execute)", got)
+	}
+}
+
 // createTarball creates a .tar.gz from the given files in the directory.
 func createTarball(t *testing.T, dir, name string, files []string) {
 	t.Helper()

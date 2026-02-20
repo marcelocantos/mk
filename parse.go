@@ -125,6 +125,11 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 		return p.parseConfigDef(trimmed, lineNum)
 	}
 
+	// Loop
+	if strings.HasPrefix(trimmed, "for ") && strings.HasSuffix(trimmed, ":") {
+		return p.parseLoop(trimmed, lineNum)
+	}
+
 	// Lazy variable
 	if rest, ok := strings.CutPrefix(trimmed, "lazy "); ok {
 		if name, value, ok := parseAssign(rest); ok {
@@ -255,6 +260,37 @@ func (p *parser) parseConfigDef(line string, lineNum int) (Node, error) {
 	}
 
 	return cfg, nil
+}
+
+func (p *parser) parseLoop(line string, lineNum int) (Node, error) {
+	// for var in list:
+	inner := strings.TrimSuffix(strings.TrimPrefix(line, "for "), ":")
+	varName, listExpr, ok := strings.Cut(inner, " in ")
+	if !ok {
+		return nil, fmt.Errorf("line %d: invalid for loop syntax: %s", lineNum, line)
+	}
+	varName = strings.TrimSpace(varName)
+	listExpr = strings.TrimSpace(listExpr)
+	if varName == "" || listExpr == "" {
+		return nil, fmt.Errorf("line %d: for loop requires variable and list: %s", lineNum, line)
+	}
+
+	body, err := p.parseBlock(true)
+	if err != nil {
+		return nil, err
+	}
+
+	// Consume "end" terminator
+	termLine, ok := p.peek()
+	if !ok {
+		return nil, fmt.Errorf("line %d: unexpected end of file in for loop", lineNum)
+	}
+	if strings.TrimSpace(termLine) != "end" {
+		return nil, fmt.Errorf("line %d: expected 'end' to close for loop, got: %s", p.pos+1, strings.TrimSpace(termLine))
+	}
+	p.pos++
+
+	return Loop{Var: varName, List: listExpr, Body: body, Line: lineNum}, nil
 }
 
 func (p *parser) parseRecipe() []string {
@@ -475,7 +511,7 @@ func isValidVarName(name string) bool {
 				return false
 			}
 		} else {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$' || c == '{' || c == '}') {
 				return false
 			}
 		}
