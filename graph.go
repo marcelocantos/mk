@@ -19,6 +19,7 @@ type resolvedRule struct {
 	prereqs []string
 	recipe  []string
 	isTask  bool
+	keep    bool   // [keep] annotation — don't delete on error
 	stem    string // first capture value from pattern match
 }
 
@@ -54,6 +55,7 @@ type patternRule struct {
 	targetPatterns []Pattern
 	prereqPatterns []Pattern
 	recipe         []string
+	keep           bool
 }
 
 // BuildGraph constructs a dependency graph from a parsed file.
@@ -139,7 +141,7 @@ func (g *Graph) addRule(r Rule) error {
 	}
 
 	if isPattern {
-		pr := patternRule{recipe: r.Recipe}
+		pr := patternRule{recipe: r.Recipe, keep: r.Keep}
 		for _, t := range expandedTargets {
 			p, _ := ParsePattern(t)
 			pr.targetPatterns = append(pr.targetPatterns, p)
@@ -157,6 +159,7 @@ func (g *Graph) addRule(r Rule) error {
 				prereqs: expandedPrereqs,
 				recipe:  r.Recipe,
 				isTask:  r.IsTask,
+				keep:    r.Keep,
 			})
 		}
 	}
@@ -229,6 +232,7 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 				target:  target,
 				prereqs: prereqs,
 				recipe:  recipe,
+				keep:    pr.keep,
 				stem:    stem,
 			}
 			return r, nil

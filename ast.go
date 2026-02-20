@@ -33,6 +33,7 @@ type Rule struct {
 	Prereqs []string
 	Recipe  []string
 	IsTask  bool // ! prefix
+	Keep    bool // [keep] annotation
 	Line    int
 }
 

@@ -87,8 +87,8 @@ func (e *Executor) Build(target string) error {
 		return nil
 	}
 	if err := e.runRecipe(recipeText); err != nil {
-		// Delete partial output on failure (for file targets)
-		if !rule.isTask {
+		// Delete partial output on failure (for file targets), unless [keep]
+		if !rule.isTask && !rule.keep {
 			os.Remove(target)
 		}
 		return fmt.Errorf("recipe for %q failed: %w", target, err)

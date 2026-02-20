@@ -134,13 +134,14 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 	}
 
 	// Rule or task
-	if isTask, targets, prereqs, ok := parseRuleHeader(trimmed); ok {
+	if isTask, keep, targets, prereqs, ok := parseRuleHeader(trimmed); ok {
 		recipe := p.parseRecipe()
 		return Rule{
 			Targets: targets,
 			Prereqs: prereqs,
 			Recipe:  recipe,
 			IsTask:  isTask,
+			Keep:    keep,
 			Line:    lineNum,
 		}, nil
 	}
@@ -255,7 +256,7 @@ func parseAppend(line string) (string, string, bool) {
 	return "", "", false
 }
 
-func parseRuleHeader(line string) (isTask bool, targets []string, prereqs []string, ok bool) {
+func parseRuleHeader(line string) (isTask, keep bool, targets []string, prereqs []string, ok bool) {
 	if strings.HasPrefix(line, "!") {
 		isTask = true
 		line = line[1:]
@@ -263,14 +264,20 @@ func parseRuleHeader(line string) (isTask bool, targets []string, prereqs []stri
 
 	colonIdx := strings.IndexByte(line, ':')
 	if colonIdx < 0 {
-		return false, nil, nil, false
+		return false, false, nil, nil, false
 	}
 
 	targetStr := strings.TrimSpace(line[:colonIdx])
 	prereqStr := strings.TrimSpace(line[colonIdx+1:])
 
 	if targetStr == "" {
-		return false, nil, nil, false
+		return false, false, nil, nil, false
+	}
+
+	// Check for [keep] annotation
+	if strings.HasSuffix(targetStr, "[keep]") {
+		keep = true
+		targetStr = strings.TrimSpace(strings.TrimSuffix(targetStr, "[keep]"))
 	}
 
 	targets = strings.Fields(targetStr)
@@ -278,7 +285,7 @@ func parseRuleHeader(line string) (isTask bool, targets []string, prereqs []stri
 		prereqs = strings.Fields(prereqStr)
 	}
 
-	return isTask, targets, prereqs, true
+	return isTask, keep, targets, prereqs, true
 }
 
 func parseInclude(line string, lineNum int) (Node, error) {

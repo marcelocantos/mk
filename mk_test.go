@@ -364,6 +364,161 @@ build/app: $obj
 	}
 }
 
+func TestParseKeep(t *testing.T) {
+	input := `
+build/data.db [keep]: schema.sql
+    sqlite3 $target < $input
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.Stmts[0].(Rule)
+	if !r.Keep {
+		t.Error("expected [keep]")
+	}
+	if r.Targets[0] != "build/data.db" {
+		t.Errorf("target = %q, want %q", r.Targets[0], "build/data.db")
+	}
+}
+
+func TestParseKeepPattern(t *testing.T) {
+	input := `
+build/{name}.db [keep]: src/{name}.sql
+    sqlite3 $target < $input
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.Stmts[0].(Rule)
+	if !r.Keep {
+		t.Error("expected [keep]")
+	}
+}
+
+func TestKeepPropagation(t *testing.T) {
+	input := `
+build/data.db [keep]: schema.sql
+    sqlite3 $target < $input
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rule, err := graph.Resolve("build/data.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.keep {
+		t.Error("resolved rule should have keep=true")
+	}
+}
+
+func TestKeepPatternPropagation(t *testing.T) {
+	input := `
+build/{name}.db [keep]: src/{name}.sql
+    sqlite3 $target < $input
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+	os.WriteFile(filepath.Join(dir, "src", "foo.sql"), []byte("CREATE TABLE foo;"), 0o644)
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rule, err := graph.Resolve("build/foo.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.keep {
+		t.Error("resolved pattern rule should have keep=true")
+	}
+}
+
+func TestChangedVariable(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	// Create source files
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("aaa"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("bbb"), 0o644)
+
+	mkfile := `
+out.txt: a.txt b.txt
+    echo $changed > $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First build: all prereqs are changed (no previous state)
+	exec := NewExecutor(graph, state, vars, false, false, false)
+	if err := exec.Build("out.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(dir, "out.txt"))
+	if s := strings.TrimSpace(string(got)); s != "a.txt b.txt" {
+		t.Errorf("first build $changed = %q, want %q", s, "a.txt b.txt")
+	}
+
+	// Save and reload state
+	state.Save()
+	state = LoadState()
+
+	// Modify only b.txt
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("bbb-modified"), 0o644)
+
+	graph, err = BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec = NewExecutor(graph, state, vars, false, false, false)
+	if err := exec.Build("out.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ = os.ReadFile(filepath.Join(dir, "out.txt"))
+	if s := strings.TrimSpace(string(got)); s != "b.txt" {
+		t.Errorf("second build $changed = %q, want %q", s, "b.txt")
+	}
+}
+
 func TestWhyStale(t *testing.T) {
 	state := &BuildState{Targets: make(map[string]*TargetState)}
 
