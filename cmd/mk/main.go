@@ -12,25 +12,26 @@ import (
 
 func main() {
 	var (
-		file     = flag.String("f", "mkfile", "mkfile to read")
-		verbose  = flag.Bool("v", false, "verbose output")
-		force    = flag.Bool("B", false, "unconditional rebuild (ignore state)")
-		dryRun   = flag.Bool("n", false, "dry run (print commands without executing)")
-		why      = flag.Bool("why", false, "explain why targets are stale")
-		graph    = flag.Bool("graph", false, "print dependency subgraph")
+		file      = flag.String("f", "mkfile", "mkfile to read")
+		verbose   = flag.Bool("v", false, "verbose output")
+		force     = flag.Bool("B", false, "unconditional rebuild (ignore state)")
+		dryRun    = flag.Bool("n", false, "dry run (print commands without executing)")
+		jobs      = flag.Int("j", -1, "parallel jobs (-1=auto, 0=unlimited)")
+		why       = flag.Bool("why", false, "explain why targets are stale")
+		graph     = flag.Bool("graph", false, "print dependency subgraph")
 		showState = flag.Bool("state", false, "show build database entries")
 	)
 	flag.Parse()
 
 	args := flag.Args()
 
-	if err := run(*file, *verbose, *force, *dryRun, *why, *graph, *showState, args); err != nil {
+	if err := run(*file, *verbose, *force, *dryRun, *jobs, *why, *graph, *showState, args); err != nil {
 		fmt.Fprintf(os.Stderr, "mk: %s\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(file string, verbose, force, dryRun, why, graph, showState bool, targets []string) error {
+func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showState bool, targets []string) error {
 	// Process command-line variable overrides
 	vars := mk.NewVars()
 	var buildTargets []string
@@ -111,7 +112,7 @@ func run(file string, verbose, force, dryRun, why, graph, showState bool, target
 	}
 
 	// Normal build
-	exec := mk.NewExecutor(g, state, vars, verbose, force, dryRun)
+	exec := mk.NewExecutor(g, state, vars, verbose, force, dryRun, jobs)
 
 	for _, t := range buildTargets {
 		if err := exec.Build(t); err != nil {

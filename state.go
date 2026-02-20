@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"sync"
 )
 
 const stateDir = ".mk"
@@ -18,6 +19,7 @@ const stateFile = ".mk/state.json"
 
 // BuildState tracks build artifacts for content-based staleness detection.
 type BuildState struct {
+	mu      sync.RWMutex
 	Targets map[string]*TargetState `json:"targets"`
 }
 
@@ -54,13 +56,27 @@ func (s *BuildState) Save() error {
 	return os.WriteFile(stateFile, data, 0o644)
 }
 
+// GetTarget returns the recorded state for a target, or nil if not found.
+func (s *BuildState) GetTarget(name string) *TargetState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Targets[name]
+}
+
 // IsStale determines if any of the targets need rebuilding.
 // Only normal prereqs (not order-only) affect staleness.
 // If fingerprint is non-empty, it is a shell command whose output replaces
 // the file-stat check for the target.
 func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText, fingerprint string) bool {
-	for _, target := range targets {
-		ts := s.Targets[target]
+	// Snapshot state under read lock, then release before I/O
+	s.mu.RLock()
+	snapshots := make([]*TargetState, len(targets))
+	for i, t := range targets {
+		snapshots[i] = s.Targets[t]
+	}
+	s.mu.RUnlock()
+
+	for i, ts := range snapshots {
 		if ts == nil {
 			return true
 		}
@@ -83,7 +99,7 @@ func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText, fin
 			}
 		} else {
 			// File mode: check target exists and prereq hashes.
-			if _, err := os.Stat(target); os.IsNotExist(err) {
+			if _, err := os.Stat(targets[i]); os.IsNotExist(err) {
 				return true
 			}
 
@@ -116,10 +132,17 @@ func (s *BuildState) IsStale(targets []string, prereqs []string, recipeText, fin
 
 // WhyStale returns human-readable reasons why any of the targets are stale.
 func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText, fingerprint string) []string {
+	s.mu.RLock()
+	snapshots := make([]*TargetState, len(targets))
+	for i, t := range targets {
+		snapshots[i] = s.Targets[t]
+	}
+	s.mu.RUnlock()
+
 	var reasons []string
 
-	for _, target := range targets {
-		ts := s.Targets[target]
+	for i, ts := range snapshots {
+		target := targets[i]
 		if ts == nil {
 			reasons = append(reasons, fmt.Sprintf("%s: no previous build recorded", target))
 			continue
@@ -170,6 +193,8 @@ func (s *BuildState) WhyStale(targets []string, prereqs []string, recipeText, fi
 
 // Record records a successful build for all targets.
 func (s *BuildState) Record(targets []string, prereqs []string, recipeText, fingerprint string) {
+	// Build TargetState objects (I/O: hashing) without holding the lock.
+	states := make(map[string]*TargetState, len(targets))
 	for _, target := range targets {
 		ts := &TargetState{
 			RecipeHash:  hashString(recipeText),
@@ -191,8 +216,15 @@ func (s *BuildState) Record(targets []string, prereqs []string, recipeText, fing
 				ts.OutputHash = h
 			}
 		}
+		states[target] = ts
+	}
+
+	// Write to map under lock.
+	s.mu.Lock()
+	for target, ts := range states {
 		s.Targets[target] = ts
 	}
+	s.mu.Unlock()
 }
 
 // runFingerprint executes the fingerprint command and returns the hash of its output.

@@ -488,7 +488,7 @@ out.txt: a.txt b.txt
 	}
 
 	// First build: all prereqs are changed (no previous state)
-	exec := NewExecutor(graph, state, vars, false, false, false)
+	exec := NewExecutor(graph, state, vars, false, false, false, 1)
 	if err := exec.Build("out.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ out.txt: a.txt b.txt
 		t.Fatal(err)
 	}
 
-	exec = NewExecutor(graph, state, vars, false, false, false)
+	exec = NewExecutor(graph, state, vars, false, false, false, 1)
 	if err := exec.Build("out.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ out1.txt out2.txt: input.txt
 		t.Fatal(err)
 	}
 
-	exec := NewExecutor(graph, state, vars, false, false, false)
+	exec := NewExecutor(graph, state, vars, false, false, false, 1)
 
 	// Build first output
 	if err := exec.Build("out1.txt"); err != nil {
@@ -728,7 +728,7 @@ out.txt: src.txt | order.txt
 	}
 
 	// First build
-	exec := NewExecutor(graph, state, vars, false, false, false)
+	exec := NewExecutor(graph, state, vars, false, false, false, 1)
 	if err := exec.Build("out.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -747,7 +747,7 @@ out.txt: src.txt | order.txt
 		t.Fatal(err)
 	}
 
-	exec = NewExecutor(graph, state, vars, false, false, false)
+	exec = NewExecutor(graph, state, vars, false, false, false, 1)
 	if err := exec.Build("out.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +785,7 @@ out.txt: a.txt | b.txt
 		t.Fatal(err)
 	}
 
-	exec := NewExecutor(graph, state, vars, false, false, false)
+	exec := NewExecutor(graph, state, vars, false, false, false, 1)
 	if err := exec.Build("out.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -1118,7 +1118,7 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 	}
 
 	// First build
-	exec := NewExecutor(graph, state, vars, false, false, false)
+	exec := NewExecutor(graph, state, vars, false, false, false, 1)
 	if err := exec.Build("extracted/config.json"); err != nil {
 		t.Fatal(err)
 	}
@@ -1144,7 +1144,7 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 		t.Fatal(err)
 	}
 
-	exec = NewExecutor(graph, state, vars, false, false, false)
+	exec = NewExecutor(graph, state, vars, false, false, false, 1)
 	if err := exec.Build("extracted/config.json"); err != nil {
 		t.Fatal(err)
 	}
@@ -1165,7 +1165,7 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 		t.Fatal(err)
 	}
 
-	exec = NewExecutor(graph, state, vars, false, false, false)
+	exec = NewExecutor(graph, state, vars, false, false, false, 1)
 	if err := exec.Build("extracted/config.json"); err != nil {
 		t.Fatal(err)
 	}
@@ -1199,6 +1199,196 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 	}
 	if rule.fingerprint != "tar xf archive.tar.gz -O config.json" {
 		t.Errorf("fingerprint = %q, want %q", rule.fingerprint, "tar xf archive.tar.gz -O config.json")
+	}
+}
+
+func TestParallelIndependent(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644)
+
+	// Two independent targets
+	mkfile := `
+out1.txt: a.txt
+    cp $input $target
+
+out2.txt: b.txt
+    cp $input $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(graph, state, vars, false, false, false, 2)
+	if err := exec.Build("out1.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Build("out2.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	got1, _ := os.ReadFile(filepath.Join(dir, "out1.txt"))
+	got2, _ := os.ReadFile(filepath.Join(dir, "out2.txt"))
+	if string(got1) != "a" {
+		t.Errorf("out1 = %q, want %q", string(got1), "a")
+	}
+	if string(got2) != "b" {
+		t.Errorf("out2 = %q, want %q", string(got2), "b")
+	}
+}
+
+func TestParallelDiamond(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "root.txt"), []byte("root"), 0o644)
+
+	// Diamond: top depends on left and right, both depend on root.txt
+	// The recipe for each intermediate writes a unique marker.
+	mkfile := `
+top.txt: left.txt right.txt
+    cat $inputs > $target
+
+left.txt: root.txt
+    echo left:$(cat $input) > $target
+
+right.txt: root.txt
+    echo right:$(cat $input) > $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(graph, state, vars, false, false, false, 4)
+	if err := exec.Build("top.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(dir, "top.txt"))
+	content := string(got)
+	if !strings.Contains(content, "left:root") || !strings.Contains(content, "right:root") {
+		t.Errorf("top.txt = %q, expected both left:root and right:root", content)
+	}
+}
+
+func TestParallelMultiOutput(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "input.txt"), []byte("data"), 0o644)
+
+	// Multi-output rule: recipe creates both outputs.
+	// A counter file tracks how many times the recipe runs.
+	mkfile := `
+out1.txt out2.txt: input.txt
+    cp $input out1.txt
+    cp $input out2.txt
+    echo x >> counter.txt
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(graph, state, vars, false, false, false, 4)
+
+	// Build both outputs — recipe should only run once
+	if err := exec.Build("out1.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Build("out2.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	counter, _ := os.ReadFile(filepath.Join(dir, "counter.txt"))
+	lines := strings.TrimSpace(string(counter))
+	if lines != "x" {
+		t.Errorf("recipe ran %d times (counter=%q), want 1", strings.Count(lines, "x"), lines)
+	}
+}
+
+func TestParallelErrorPropagation(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "good.txt"), []byte("good"), 0o644)
+
+	// "bad" target always fails; "good_out" is independent
+	mkfile := `
+bad.txt: good.txt
+    exit 1
+
+good_out.txt: good.txt
+    cp $input $target
+
+top.txt: bad.txt
+    echo should not run > $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(graph, state, vars, false, false, false, 4)
+
+	// good_out should succeed despite bad existing
+	if err := exec.Build("good_out.txt"); err != nil {
+		t.Fatalf("good_out.txt should succeed: %v", err)
+	}
+
+	// top depends on bad, should fail
+	if err := exec.Build("top.txt"); err == nil {
+		t.Fatal("top.txt should fail (depends on bad.txt)")
+	}
+
+	// good_out should still exist
+	if _, err := os.Stat(filepath.Join(dir, "good_out.txt")); err != nil {
+		t.Error("good_out.txt should exist")
+	}
+
+	// top.txt should not have been created
+	if _, err := os.Stat(filepath.Join(dir, "top.txt")); err == nil {
+		t.Error("top.txt should NOT exist (prereq failed)")
 	}
 }
 

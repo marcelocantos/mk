@@ -1,11 +1,15 @@
 package mk
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 // Executor runs build recipes.
@@ -13,51 +17,99 @@ type Executor struct {
 	graph   *Graph
 	state   *BuildState
 	vars    *Vars
-	built   map[string]bool
 	verbose bool
 	force   bool // -B: unconditional rebuild
 	dryRun  bool // -n: print commands without executing
+	jobs    int  // max concurrent recipes (0 = unlimited)
+
+	mu       sync.Mutex
+	building map[string]*buildResult // singleflight dedup
+	sem      chan struct{}            // recipe concurrency limiter; nil = unlimited
+	outputMu sync.Mutex              // serializes buffered output flushes
 }
 
-func NewExecutor(graph *Graph, state *BuildState, vars *Vars, verbose, force, dryRun bool) *Executor {
+// buildResult tracks the in-progress or completed build of a target.
+// Multiple targets from the same multi-output rule share one buildResult.
+type buildResult struct {
+	done chan struct{}
+	err  error
+}
+
+func NewExecutor(graph *Graph, state *BuildState, vars *Vars, verbose, force, dryRun bool, jobs int) *Executor {
+	if jobs < 0 {
+		jobs = runtime.NumCPU()
+	}
+
+	var sem chan struct{}
+	if jobs > 0 {
+		sem = make(chan struct{}, jobs)
+	}
+	// jobs == 0: sem stays nil → unlimited concurrency
+
 	return &Executor{
-		graph:   graph,
-		state:   state,
-		vars:    vars,
-		built:   make(map[string]bool),
-		verbose: verbose,
-		force:   force,
-		dryRun:  dryRun,
+		graph:    graph,
+		state:    state,
+		vars:     vars,
+		verbose:  verbose,
+		force:    force,
+		dryRun:   dryRun,
+		jobs:     jobs,
+		building: make(map[string]*buildResult),
+		sem:      sem,
 	}
 }
 
 // Build builds the given target and all its dependencies.
+// Safe to call concurrently from multiple goroutines.
 func (e *Executor) Build(target string) error {
-	if e.built[target] {
-		return nil
+	e.mu.Lock()
+	if res, ok := e.building[target]; ok {
+		e.mu.Unlock()
+		<-res.done
+		return res.err
 	}
 
+	// Resolve rule under lock to discover co-targets for multi-output dedup.
+	// Graph.Resolve is read-only and safe to call here.
 	rule, err := e.graph.Resolve(target)
 	if err != nil {
+		e.mu.Unlock()
 		return err
 	}
 
-	// Mark all outputs as built to prevent re-execution of multi-output rules
+	res := &buildResult{done: make(chan struct{})}
 	for _, t := range rule.targets {
-		e.built[t] = true
+		e.building[t] = res
 	}
+	e.mu.Unlock()
 
-	// Build normal prerequisites first
-	for _, p := range rule.prereqs {
-		if err := e.Build(p); err != nil {
-			return fmt.Errorf("building %q for %q: %w", p, target, err)
-		}
+	err = e.doBuild(target, rule)
+	res.err = err
+	close(res.done)
+	return err
+}
+
+func (e *Executor) doBuild(target string, rule *resolvedRule) error {
+	// Build all prerequisites concurrently
+	allPrereqs := make([]string, 0, len(rule.prereqs)+len(rule.orderOnlyPrereqs))
+	allPrereqs = append(allPrereqs, rule.prereqs...)
+	allPrereqs = append(allPrereqs, rule.orderOnlyPrereqs...)
+
+	errs := make([]error, len(allPrereqs))
+	var wg sync.WaitGroup
+	for i, p := range allPrereqs {
+		wg.Add(1)
+		go func(idx int, prereq string) {
+			defer wg.Done()
+			errs[idx] = e.Build(prereq)
+		}(i, p)
 	}
+	wg.Wait()
 
-	// Build order-only prerequisites (ordering only, no staleness)
-	for _, p := range rule.orderOnlyPrereqs {
-		if err := e.Build(p); err != nil {
-			return fmt.Errorf("building order-only %q for %q: %w", p, target, err)
+	// Check for prereq errors
+	for i, err := range errs {
+		if err != nil {
+			return fmt.Errorf("building %q for %q: %w", allPrereqs[i], target, err)
 		}
 	}
 
@@ -71,11 +123,23 @@ func (e *Executor) Build(target string) error {
 	fingerprint := e.expandFingerprint(rule)
 	if !rule.isTask && !e.force && !e.state.IsStale(rule.targets, rule.prereqs, recipeText, fingerprint) {
 		if e.verbose {
+			e.outputMu.Lock()
 			fmt.Fprintf(os.Stderr, "mk: %q is up to date\n", rule.target)
+			e.outputMu.Unlock()
 		}
 		return nil
 	}
 
+	// Acquire semaphore slot to limit concurrent recipes
+	if e.sem != nil {
+		e.sem <- struct{}{}
+		defer func() { <-e.sem }()
+	}
+
+	return e.executeRecipe(rule, recipeText, fingerprint)
+}
+
+func (e *Executor) executeRecipe(rule *resolvedRule, recipeText, fingerprint string) error {
 	// Auto-create parent directories for all targets
 	if !rule.isTask {
 		for _, t := range rule.targets {
@@ -90,17 +154,59 @@ func (e *Executor) Build(target string) error {
 		}
 	}
 
-	// Execute recipe
-	fmt.Fprintf(os.Stderr, "mk: building %q\n", rule.target)
+	// Build banner
+	var banner strings.Builder
+	fmt.Fprintf(&banner, "mk: building %q\n", rule.target)
 	if e.verbose || e.dryRun {
 		for _, line := range strings.Split(recipeText, "\n") {
-			fmt.Fprintf(os.Stderr, "  %s\n", line)
+			fmt.Fprintf(&banner, "  %s\n", line)
 		}
 	}
+
 	if e.dryRun {
+		e.outputMu.Lock()
+		fmt.Fprint(os.Stderr, banner.String())
+		e.outputMu.Unlock()
 		return nil
 	}
-	if err := e.runRecipe(recipeText); err != nil {
+
+	// Determine output mode: serial streams directly, parallel buffers
+	serial := e.sem != nil && cap(e.sem) == 1
+	var stdout, stderr io.Writer
+	var outBuf, errBuf bytes.Buffer
+
+	if serial {
+		// Serial mode: stream banner and output directly
+		e.outputMu.Lock()
+		fmt.Fprint(os.Stderr, banner.String())
+		e.outputMu.Unlock()
+		stdout = os.Stdout
+		stderr = os.Stderr
+	} else {
+		// Parallel mode: buffer output, flush atomically on completion
+		stdout = &outBuf
+		stderr = &errBuf
+	}
+
+	// Execute recipe
+	fullScript := "set -e\n" + recipeText
+	cmd := exec.Command("sh", "-c", fullScript)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Env = e.vars.Environ()
+
+	err := cmd.Run()
+
+	if !serial {
+		// Flush buffered output atomically
+		e.outputMu.Lock()
+		fmt.Fprint(os.Stderr, banner.String())
+		outBuf.WriteTo(os.Stdout)
+		errBuf.WriteTo(os.Stderr)
+		e.outputMu.Unlock()
+	}
+
+	if err != nil {
 		// Delete partial output on failure (for file targets), unless [keep]
 		if !rule.isTask && !rule.keep {
 			for _, t := range rule.targets {
@@ -116,17 +222,6 @@ func (e *Executor) Build(target string) error {
 	}
 
 	return nil
-}
-
-func (e *Executor) runRecipe(script string) error {
-	fullScript := "set -e\n" + script
-
-	cmd := exec.Command("sh", "-c", fullScript)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = e.vars.Environ()
-
-	return cmd.Run()
 }
 
 func (e *Executor) expandFingerprint(rule *resolvedRule) string {
@@ -160,7 +255,7 @@ func (e *Executor) expandRecipe(rule *resolvedRule) string {
 
 	// Find changed prerequisites (only normal prereqs)
 	var changed []string
-	ts := e.state.Targets[rule.target]
+	ts := e.state.GetTarget(rule.target)
 	for _, p := range rule.prereqs {
 		if ts == nil {
 			changed = append(changed, p)
