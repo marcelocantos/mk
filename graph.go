@@ -14,6 +14,16 @@ type Graph struct {
 	vars        *Vars
 	state       *BuildState
 	scopePrefix string // current include scope path prefix (e.g., "lib/")
+
+	rawRules      []rawRuleEntry       // stored for re-expansion after config application
+	configs       map[string]*ConfigDef // registered config definitions
+	activeConfigs []string              // configs requested via CLI
+}
+
+// rawRuleEntry stores a Rule AST node with its scope context for re-expansion.
+type rawRuleEntry struct {
+	rule        Rule
+	scopePrefix string
 }
 
 type resolvedRule struct {
@@ -70,17 +80,98 @@ type patternRule struct {
 }
 
 // BuildGraph constructs a dependency graph from a parsed file.
-func BuildGraph(file *File, vars *Vars, state *BuildState) (*Graph, error) {
+// activeConfigs specifies the configs requested via CLI (e.g., ["debug", "asan"]).
+func BuildGraph(file *File, vars *Vars, state *BuildState, activeConfigs []string) (*Graph, error) {
 	g := &Graph{
-		vars:  vars,
-		state: state,
+		vars:          vars,
+		state:         state,
+		configs:       make(map[string]*ConfigDef),
+		activeConfigs: activeConfigs,
 	}
 
 	if err := g.evaluate(file.Stmts); err != nil {
 		return nil, err
 	}
 
+	// Apply active configs after all statements are evaluated
+	if len(activeConfigs) > 0 {
+		if err := g.applyConfigs(); err != nil {
+			return nil, err
+		}
+		g.reExpandRules()
+	}
+
 	return g, nil
+}
+
+// ConfigRequires returns the targets that active configs require to be built first.
+func (g *Graph) ConfigRequires() []string {
+	var requires []string
+	for _, name := range g.activeConfigs {
+		if cfg, ok := g.configs[name]; ok {
+			requires = append(requires, cfg.Requires...)
+		}
+	}
+	return requires
+}
+
+func (g *Graph) applyConfigs() error {
+	// Validate all active configs are defined
+	for _, name := range g.activeConfigs {
+		if _, ok := g.configs[name]; !ok {
+			return fmt.Errorf("unknown config %q", name)
+		}
+	}
+
+	// Check mutual exclusion
+	for _, name := range g.activeConfigs {
+		cfg := g.configs[name]
+		for _, exc := range cfg.Excludes {
+			for _, other := range g.activeConfigs {
+				if exc == other {
+					return fmt.Errorf("config %q excludes %q; cannot use both", name, other)
+				}
+			}
+		}
+	}
+
+	// Apply config variable overrides in CLI order
+	for _, name := range g.activeConfigs {
+		cfg := g.configs[name]
+		for _, va := range cfg.Vars {
+			value := g.vars.Expand(va.Value)
+			switch va.Op {
+			case OpSet:
+				g.vars.Set(va.Name, value)
+			case OpAppend:
+				g.vars.Append(va.Name, value)
+			case OpCondSet:
+				if g.vars.Get(va.Name) == "" {
+					g.vars.Set(va.Name, value)
+				}
+			}
+		}
+	}
+
+	// Auto-derive builddir
+	if base := g.vars.Get("builddir"); base != "" {
+		g.vars.Set("builddir", base+"-"+strings.Join(g.activeConfigs, "-"))
+	}
+
+	return nil
+}
+
+func (g *Graph) reExpandRules() {
+	saved := g.rawRules
+	g.rules = nil
+	g.patterns = nil
+	g.rawRules = nil
+	for _, raw := range saved {
+		savedPrefix := g.scopePrefix
+		g.scopePrefix = raw.scopePrefix
+		g.addRule(raw.rule) //nolint:errcheck // re-expansion of previously valid rules
+		g.scopePrefix = savedPrefix
+	}
 }
 
 func (g *Graph) evaluate(stmts []Node) error {
@@ -125,12 +216,18 @@ func (g *Graph) evalNode(node Node) error {
 
 	case FuncDef:
 		g.vars.SetFunc(&n)
+
+	case ConfigDef:
+		g.configs[n.Name] = &n
 	}
 
 	return nil
 }
 
 func (g *Graph) addRule(r Rule) error {
+	// Store raw rule for re-expansion after config application
+	g.rawRules = append(g.rawRules, rawRuleEntry{rule: r, scopePrefix: g.scopePrefix})
+
 	// Expand variable references in targets and prereqs
 	var expandedTargets []string
 	for _, t := range r.Targets {

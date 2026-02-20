@@ -31,21 +31,39 @@ func main() {
 	}
 }
 
-func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showState bool, targets []string) error {
-	// Process command-line variable overrides
+func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showState bool, args []string) error {
+	// Process command-line arguments: targets, configs, and variable overrides
 	vars := mk.NewVars()
 	var buildTargets []string
-	for _, arg := range targets {
+	var activeConfigs []string
+	configSeen := map[string]bool{}
+
+	for _, arg := range args {
 		if name, value, ok := strings.Cut(arg, "="); ok {
 			vars.Set(name, value)
+			continue
+		}
+		// Check for target:config1+config2 syntax
+		if target, configStr, ok := strings.Cut(arg, ":"); ok {
+			buildTargets = append(buildTargets, target)
+			for _, c := range strings.Split(configStr, "+") {
+				c = strings.TrimSpace(c)
+				if c != "" && !configSeen[c] {
+					activeConfigs = append(activeConfigs, c)
+					configSeen[c] = true
+				}
+			}
 		} else {
 			buildTargets = append(buildTargets, arg)
 		}
 	}
 
+	// Config suffix for state file isolation
+	configSuffix := strings.Join(activeConfigs, "-")
+
 	// --state only needs the build database
 	if showState {
-		state := mk.LoadState()
+		state := mk.LoadState(configSuffix)
 		if len(buildTargets) == 0 {
 			return fmt.Errorf("--state requires at least one target")
 		}
@@ -72,9 +90,9 @@ func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showSta
 		return err
 	}
 
-	state := mk.LoadState()
+	state := mk.LoadState(configSuffix)
 
-	g, err := mk.BuildGraph(ast, vars, state)
+	g, err := mk.BuildGraph(ast, vars, state, activeConfigs)
 	if err != nil {
 		return err
 	}
@@ -114,6 +132,14 @@ func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showSta
 	// Normal build
 	exec := mk.NewExecutor(g, state, vars, verbose, force, dryRun, jobs)
 
+	// Build config requires targets first
+	for _, req := range g.ConfigRequires() {
+		if err := exec.Build(req); err != nil {
+			return err
+		}
+	}
+
+	// Build main targets
 	for _, t := range buildTargets {
 		if err := exec.Build(t); err != nil {
 			return err
@@ -123,5 +149,5 @@ func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showSta
 	if dryRun {
 		return nil
 	}
-	return state.Save()
+	return state.Save(configSuffix)
 }

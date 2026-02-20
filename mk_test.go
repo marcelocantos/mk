@@ -77,7 +77,7 @@ opt ?= O2
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	_, err = BuildGraph(f, vars, state)
+	_, err = BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ build/app: $obj
 	os.WriteFile(filepath.Join(dir, "mkfile"), []byte(mkfile), 0o644)
 
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ build/data.db [keep]: schema.sql
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ build/{name}.db [keep]: src/{name}.sql
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ out.txt: a.txt b.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,13 +499,13 @@ out.txt: a.txt b.txt
 	}
 
 	// Save and reload state
-	state.Save()
-	state = LoadState()
+	state.Save("")
+	state = LoadState("")
 
 	// Modify only b.txt
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("bbb-modified"), 0o644)
 
-	graph, err = BuildGraph(f, vars, state)
+	graph, err = BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,7 @@ gen/{name}.pb.h gen/{name}.pb.cc: proto/{name}.proto
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +605,7 @@ gen/foo.h gen/foo.cc: proto/foo.proto
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +649,7 @@ out1.txt out2.txt: input.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -722,7 +722,7 @@ out.txt: src.txt | order.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +732,7 @@ out.txt: src.txt | order.txt
 	if err := exec.Build("out.txt"); err != nil {
 		t.Fatal(err)
 	}
-	state.Save()
+	state.Save("")
 
 	// Overwrite out.txt with a sentinel so we can detect if recipe re-runs
 	os.WriteFile(filepath.Join(dir, "out.txt"), []byte("sentinel"), 0o644)
@@ -741,8 +741,8 @@ out.txt: src.txt | order.txt
 	os.WriteFile(filepath.Join(dir, "order.txt"), []byte("order2-changed"), 0o644)
 
 	// Reload state and rebuild — recipe should NOT run
-	state = LoadState()
-	graph, err = BuildGraph(f, vars, state)
+	state = LoadState("")
+	graph, err = BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,7 +780,7 @@ out.txt: a.txt | b.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -818,7 +818,7 @@ build/app: src.c
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,7 +865,7 @@ include lib/mkfile as lib
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -913,7 +913,7 @@ include lib/mkfile as lib
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	_, err = BuildGraph(f, vars, state)
+	_, err = BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -953,7 +953,7 @@ include {path}/mkfile as {path}
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	_, err = BuildGraph(f, vars, state)
+	_, err = BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -990,7 +990,7 @@ include lib/mkfile as lib
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1112,7 +1112,7 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,7 +1122,7 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 	if err := exec.Build("extracted/config.json"); err != nil {
 		t.Fatal(err)
 	}
-	state.Save()
+	state.Save("")
 
 	// Verify extracted content
 	got, _ := os.ReadFile(filepath.Join(dir, "extracted", "config.json"))
@@ -1138,8 +1138,8 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 	os.WriteFile(filepath.Join(dir, "extracted", "config.json"), []byte("sentinel"), 0o644)
 
 	// Reload state and rebuild — should NOT rebuild (fingerprint unchanged)
-	state = LoadState()
-	graph, err = BuildGraph(f, vars, state)
+	state = LoadState("")
+	graph, err = BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1159,8 +1159,8 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 	createTarball(t, dir, "archive.tar.gz", []string{"config.json", "other.txt"})
 
 	// Reload state and rebuild — SHOULD rebuild (fingerprint changed)
-	state = LoadState()
-	graph, err = BuildGraph(f, vars, state)
+	state = LoadState("")
+	graph, err = BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1188,7 +1188,7 @@ extracted/config.json [fingerprint: tar xf archive.tar.gz -O config.json]: archi
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1226,7 +1226,7 @@ out2.txt: b.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1276,7 +1276,7 @@ right.txt: root.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1316,7 +1316,7 @@ out1.txt out2.txt: input.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1364,7 +1364,7 @@ top.txt: bad.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1432,7 +1432,7 @@ obj = $[objpath $src]
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	_, err = BuildGraph(f, vars, state)
+	_, err = BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1486,7 +1486,7 @@ out.txt: input.txt
 
 	vars := NewVars()
 	state := &BuildState{Targets: make(map[string]*TargetState)}
-	graph, err := BuildGraph(f, vars, state)
+	graph, err := BuildGraph(f, vars, state, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1547,6 +1547,293 @@ func TestHashCacheInvalidation(t *testing.T) {
 
 	if h1 == h2 {
 		t.Error("hash should differ after file modification")
+	}
+}
+
+func TestParseConfigDef(t *testing.T) {
+	input := `
+config debug:
+    excludes release
+    cxxflags += -O0 -g -DDEBUG
+    ldflags += -g
+
+config release:
+    excludes debug
+    cxxflags += -O2 -DNDEBUG
+
+config asan:
+    requires dist
+    cxxflags += -fsanitize=address
+    ldflags += -fsanitize=address
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(f.Stmts) != 3 {
+		t.Fatalf("expected 3 statements, got %d", len(f.Stmts))
+	}
+
+	// debug config
+	cfg := f.Stmts[0].(ConfigDef)
+	if cfg.Name != "debug" {
+		t.Errorf("name = %q, want %q", cfg.Name, "debug")
+	}
+	if len(cfg.Excludes) != 1 || cfg.Excludes[0] != "release" {
+		t.Errorf("excludes = %v, want [release]", cfg.Excludes)
+	}
+	if len(cfg.Vars) != 2 {
+		t.Errorf("expected 2 vars, got %d", len(cfg.Vars))
+	}
+
+	// asan config
+	cfg3 := f.Stmts[2].(ConfigDef)
+	if cfg3.Name != "asan" {
+		t.Errorf("name = %q, want %q", cfg3.Name, "asan")
+	}
+	if len(cfg3.Requires) != 1 || cfg3.Requires[0] != "dist" {
+		t.Errorf("requires = %v, want [dist]", cfg3.Requires)
+	}
+}
+
+func TestConfigVarOverride(t *testing.T) {
+	input := `
+opt = none
+
+config debug:
+    opt = debug_val
+
+out.txt:
+    echo $opt > $target
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, []string{"debug"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := vars.Get("opt"); got != "debug_val" {
+		t.Errorf("opt = %q, want %q", got, "debug_val")
+	}
+}
+
+func TestConfigVarAppend(t *testing.T) {
+	input := `
+cxxflags = -Wall
+
+config debug:
+    cxxflags += -O0 -g
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, []string{"debug"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := vars.Get("cxxflags"); got != "-Wall -O0 -g" {
+		t.Errorf("cxxflags = %q, want %q", got, "-Wall -O0 -g")
+	}
+}
+
+func TestConfigComposition(t *testing.T) {
+	input := `
+cxxflags = -Wall
+ldflags =
+
+config debug:
+    cxxflags += -O0
+    ldflags += -g
+
+config asan:
+    cxxflags += -fsanitize=address
+    ldflags += -fsanitize=address
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, []string{"debug", "asan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// debug applied first, then asan
+	if got := vars.Get("cxxflags"); got != "-Wall -O0 -fsanitize=address" {
+		t.Errorf("cxxflags = %q, want %q", got, "-Wall -O0 -fsanitize=address")
+	}
+	if got := vars.Get("ldflags"); got != "-g -fsanitize=address" {
+		t.Errorf("ldflags = %q, want %q", got, "-g -fsanitize=address")
+	}
+}
+
+func TestConfigExcludeError(t *testing.T) {
+	input := `
+config debug:
+    excludes release
+
+config release:
+    excludes debug
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, []string{"debug", "release"})
+	if err == nil {
+		t.Fatal("expected error for mutually exclusive configs")
+	}
+	if !strings.Contains(err.Error(), "excludes") {
+		t.Errorf("error = %q, expected to mention excludes", err.Error())
+	}
+}
+
+func TestConfigUnknownError(t *testing.T) {
+	input := `
+config debug:
+    cxxflags += -O0
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, []string{"nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown config")
+	}
+	if !strings.Contains(err.Error(), "unknown config") {
+		t.Errorf("error = %q, expected to mention unknown config", err.Error())
+	}
+}
+
+func TestConfigBuildDir(t *testing.T) {
+	input := `
+builddir = build
+
+config debug:
+    cxxflags += -O0
+
+config asan:
+    cxxflags += -fsanitize=address
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, []string{"debug", "asan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := vars.Get("builddir"); got != "build-debug-asan" {
+		t.Errorf("builddir = %q, want %q", got, "build-debug-asan")
+	}
+}
+
+func TestConfigPatternRule(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+	os.WriteFile(filepath.Join(dir, "src", "foo.c"), []byte("int main() {}"), 0o644)
+
+	mkfile := `
+builddir = build
+
+config debug:
+    cxxflags += -O0
+
+$builddir/{name}.o: src/{name}.c
+    gcc -c $input -o $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without config: pattern should resolve under build/
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := graph.Resolve("build/foo.o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.target != "build/foo.o" {
+		t.Errorf("base target = %q, want %q", rule.target, "build/foo.o")
+	}
+
+	// With debug config: pattern should resolve under build-debug/
+	vars2 := NewVars()
+	graph2, err := BuildGraph(f, vars2, state, []string{"debug"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule2, err := graph2.Resolve("build-debug/foo.o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule2.target != "build-debug/foo.o" {
+		t.Errorf("config target = %q, want %q", rule2.target, "build-debug/foo.o")
+	}
+
+	// The base path should NOT resolve with debug config
+	_, err = graph2.Resolve("build/foo.o")
+	if err == nil {
+		t.Error("build/foo.o should NOT resolve with debug config")
+	}
+}
+
+func TestConfigRequires(t *testing.T) {
+	input := `
+config dist:
+    requires distpkg
+    csp_include = dist
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, []string{"dist"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requires := graph.ConfigRequires()
+	if len(requires) != 1 || requires[0] != "distpkg" {
+		t.Errorf("requires = %v, want [distpkg]", requires)
 	}
 }
 

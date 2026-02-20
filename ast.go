@@ -68,8 +68,18 @@ type FuncDef struct {
 	Line   int
 }
 
+// ConfigDef represents a build config declaration: config name: ...
+type ConfigDef struct {
+	Name     string
+	Excludes []string    // mutually exclusive configs
+	Requires []string    // targets that must be built before any :config build
+	Vars     []VarAssign // variable overrides
+	Line     int
+}
+
 func (VarAssign) node()   {}
 func (Rule) node()        {}
 func (Include) node()     {}
 func (Conditional) node() {}
 func (FuncDef) node()     {}
+func (ConfigDef) node()   {}

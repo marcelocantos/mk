@@ -16,7 +16,15 @@ import (
 )
 
 const stateDir = ".mk"
-const stateFile = ".mk/state.json"
+
+// StateFile returns the state file path for the given config suffix.
+// Empty suffix uses the base state file.
+func StateFile(configSuffix string) string {
+	if configSuffix == "" {
+		return filepath.Join(stateDir, "state.json")
+	}
+	return filepath.Join(stateDir, "state-"+configSuffix+".json")
+}
 
 // BuildState tracks build artifacts for content-based staleness detection.
 type BuildState struct {
@@ -33,9 +41,9 @@ type TargetState struct {
 	Prereqs         []string          `json:"prereqs"`
 }
 
-func LoadState() *BuildState {
+func LoadState(configSuffix string) *BuildState {
 	s := &BuildState{Targets: make(map[string]*TargetState)}
-	data, err := os.ReadFile(stateFile)
+	data, err := os.ReadFile(StateFile(configSuffix))
 	if err != nil {
 		return s
 	}
@@ -46,7 +54,7 @@ func LoadState() *BuildState {
 	return s
 }
 
-func (s *BuildState) Save() error {
+func (s *BuildState) Save(configSuffix string) error {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return err
 	}
@@ -54,7 +62,7 @@ func (s *BuildState) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(stateFile, data, 0o644)
+	return os.WriteFile(StateFile(configSuffix), data, 0o644)
 }
 
 // GetTarget returns the recorded state for a target, or nil if not found.

@@ -120,6 +120,11 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 		return p.parseFuncDef(trimmed, lineNum)
 	}
 
+	// Config definition
+	if strings.HasPrefix(trimmed, "config ") && strings.HasSuffix(trimmed, ":") {
+		return p.parseConfigDef(trimmed, lineNum)
+	}
+
 	// Lazy variable
 	if rest, ok := strings.CutPrefix(trimmed, "lazy "); ok {
 		if name, value, ok := parseAssign(rest); ok {
@@ -203,6 +208,53 @@ func (p *parser) parseFuncDef(line string, lineNum int) (Node, error) {
 	}
 
 	return FuncDef{Name: name, Params: params, Body: body, Line: lineNum}, nil
+}
+
+func (p *parser) parseConfigDef(line string, lineNum int) (Node, error) {
+	// config name:
+	name := strings.TrimSuffix(strings.TrimPrefix(line, "config "), ":")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("line %d: config requires a name", lineNum)
+	}
+
+	cfg := ConfigDef{Name: name, Line: lineNum}
+
+	// Read indented body lines
+	for {
+		bodyLine, ok := p.peek()
+		if !ok {
+			break
+		}
+		if bodyLine == "" {
+			p.pos++
+			continue
+		}
+		if bodyLine[0] != ' ' && bodyLine[0] != '\t' {
+			break
+		}
+		p.pos++
+		trimmed := strings.TrimSpace(bodyLine)
+		if trimmed == "" {
+			continue
+		}
+
+		if rest, ok := strings.CutPrefix(trimmed, "excludes "); ok {
+			cfg.Excludes = append(cfg.Excludes, strings.Fields(rest)...)
+		} else if rest, ok := strings.CutPrefix(trimmed, "requires "); ok {
+			cfg.Requires = append(cfg.Requires, strings.Fields(rest)...)
+		} else if vname, value, ok := parseAssign(trimmed); ok {
+			cfg.Vars = append(cfg.Vars, VarAssign{Name: vname, Op: OpSet, Value: value})
+		} else if vname, value, ok := parseAppend(trimmed); ok {
+			cfg.Vars = append(cfg.Vars, VarAssign{Name: vname, Op: OpAppend, Value: value})
+		} else if vname, value, ok := parseCondAssign(trimmed); ok {
+			cfg.Vars = append(cfg.Vars, VarAssign{Name: vname, Op: OpCondSet, Value: value})
+		} else {
+			return nil, fmt.Errorf("line %d: unrecognized config property: %s", p.pos, trimmed)
+		}
+	}
+
+	return cfg, nil
 }
 
 func (p *parser) parseRecipe() []string {
