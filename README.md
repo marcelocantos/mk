@@ -12,38 +12,13 @@ See [DESIGN.md](DESIGN.md) for the full specification.
 
 ## Why mk?
 
-Make is forty-eight years old. Its core model — declare dependencies,
-run recipes, rebuild only what's stale — is excellent. Almost everything
-else about it is a source of friction.
-
-**Timestamps lie.** `git checkout`, CI cache restores, `tar xf`, and
-`rsync` all produce files whose modification times have nothing to do
-with when the content last changed. mk tracks content hashes (SHA-256)
-instead. Modify a file and revert it? No rebuild. Extract unchanged
-files from a fresh archive? No rebuild.
-
-**The syntax is hostile.** Tabs vs spaces. `$$` escaping in recipes
-because Make overloads `$(...)` for both its own functions and shell
-commands. Single-character automatic variables (`$@`, `$<`, `$^`) that
-nobody remembers. Implicit rules that fire when you don't expect them.
-mk uses `$target`, `$input`, `$inputs`; separates mk functions
-(`$[...]`) from shell (`$(...)`); accepts any indentation; and has zero
-implicit rules.
-
-**Incremental builds are fragile.** Make doesn't track recipe changes,
-prerequisite-set changes, or deleted source files. Change a compiler
-flag? Make won't notice. Delete a `.c` file from your source list?
-The stale `.o` lingers. mk's build database tracks recipe text,
-prerequisite sets, and input/output content hashes — if anything
-relevant changes, the target rebuilds.
-
-**Multi-directory builds are painful.** Recursive make (`$(MAKE) -C
-subdir`) creates opaque subprocess boundaries that hide dependencies and
-break parallel builds. mk's scoped includes (`include lib/mkfile as
-lib`) merge everything into a single dependency graph — correct
-incrementals and full parallelism across the entire project.
-
-mk is not a radical reimagination. It is Make with the mistakes fixed.
+Make's core model is excellent. The rest of it is a source of friction:
+timestamps lie after `git checkout` and CI cache restores, `$$` escaping
+trips everyone up, incremental builds break when you change a flag or
+delete a source file, and recursive make hides dependencies across
+directories. mk fixes all of this — content hashing, clean syntax,
+a build database that tracks everything, and a single dependency graph
+across the whole project — while keeping the model that works.
 
 ## Install
 
