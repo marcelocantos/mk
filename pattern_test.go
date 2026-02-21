@@ -17,7 +17,11 @@ func TestParsePattern(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		p, ok := ParsePattern(tt.input)
+		p, ok, err := ParsePattern(tt.input)
+		if err != nil {
+			t.Errorf("ParsePattern(%q): unexpected error: %v", tt.input, err)
+			continue
+		}
 		if ok != tt.isPattern {
 			t.Errorf("ParsePattern(%q): isPattern = %v, want %v", tt.input, ok, tt.isPattern)
 			continue
@@ -55,7 +59,7 @@ func TestPatternMatch(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		p, _ := ParsePattern(tt.pattern)
+		p, _, _ := ParsePattern(tt.pattern)
 		caps, ok := p.Match(tt.input)
 		if ok != tt.match {
 			t.Errorf("Pattern(%q).Match(%q): match = %v, want %v", tt.pattern, tt.input, ok, tt.match)
@@ -82,7 +86,7 @@ func TestPatternExpand(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		p, _ := ParsePattern(tt.pattern)
+		p, _, _ := ParsePattern(tt.pattern)
 		got := p.Expand(tt.captures)
 		if got != tt.want {
 			t.Errorf("Pattern(%q).Expand(%v) = %q, want %q", tt.pattern, tt.captures, got, tt.want)
@@ -92,8 +96,8 @@ func TestPatternExpand(t *testing.T) {
 
 func TestSameNamedCaptures(t *testing.T) {
 	// Same capture name on both sides of a rule means values must match
-	target, _ := ParsePattern("build/{name}.o")
-	prereq, _ := ParsePattern("src/{name}.c")
+	target, _, _ := ParsePattern("build/{name}.o")
+	prereq, _, _ := ParsePattern("src/{name}.c")
 
 	caps, ok := target.Match("build/foo.o")
 	if !ok {
@@ -103,5 +107,144 @@ func TestSameNamedCaptures(t *testing.T) {
 	expanded := prereq.Expand(caps)
 	if expanded != "src/foo.c" {
 		t.Errorf("prereq.Expand = %q, want %q", expanded, "src/foo.c")
+	}
+}
+
+func TestParsePatternGlob(t *testing.T) {
+	p, ok, err := ParsePattern("build/{name:test_*}.o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected pattern")
+	}
+	if p.Captures[0] != "name" {
+		t.Errorf("capture name = %q, want %q", p.Captures[0], "name")
+	}
+	if p.Constraints[0] == nil || p.Constraints[0].Glob != "test_*" {
+		t.Errorf("expected glob constraint 'test_*'")
+	}
+}
+
+func TestParsePatternRegex(t *testing.T) {
+	p, ok, err := ParsePattern("build/{name/[a-z]+}.o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected pattern")
+	}
+	if p.Captures[0] != "name" {
+		t.Errorf("capture name = %q, want %q", p.Captures[0], "name")
+	}
+	if p.Constraints[0] == nil || p.Constraints[0].Regex == nil {
+		t.Fatal("expected regex constraint")
+	}
+}
+
+func TestParsePatternRegexWithBraces(t *testing.T) {
+	// Regex quantifiers {n,m} must not confuse the parser
+	p, ok, err := ParsePattern("v{ver/\\d{1,3}}.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected pattern")
+	}
+	if p.Captures[0] != "ver" {
+		t.Errorf("capture name = %q, want %q", p.Captures[0], "ver")
+	}
+	if p.Constraints[0] == nil || p.Constraints[0].Regex == nil {
+		t.Fatal("expected regex constraint")
+	}
+	// Should match version-like strings
+	caps, ok := p.Match("v42.txt")
+	if !ok || caps["ver"] != "42" {
+		t.Errorf("Match(v42.txt) = %v, %v; want ver=42", caps, ok)
+	}
+	caps, ok = p.Match("v123.txt")
+	if !ok || caps["ver"] != "123" {
+		t.Errorf("Match(v123.txt) = %v, %v; want ver=123", caps, ok)
+	}
+	// 4 digits should not match \d{1,3}
+	_, ok = p.Match("v1234.txt")
+	if ok {
+		t.Error("Match(v1234.txt) should fail (too many digits)")
+	}
+}
+
+func TestGlobConstraintMatch(t *testing.T) {
+	p, _, _ := ParsePattern("build/{name:test_*}.o")
+
+	caps, ok := p.Match("build/test_foo.o")
+	if !ok || caps["name"] != "test_foo" {
+		t.Errorf("expected match for test_foo, got %v, %v", caps, ok)
+	}
+
+	_, ok = p.Match("build/bench_foo.o")
+	if ok {
+		t.Error("expected no match for bench_foo")
+	}
+}
+
+func TestGlobAlternation(t *testing.T) {
+	p, _, _ := ParsePattern("src/{name}.{ext:c,cc,cpp}")
+
+	tests := []struct {
+		input string
+		match bool
+		ext   string
+	}{
+		{"src/foo.c", true, "c"},
+		{"src/foo.cc", true, "cc"},
+		{"src/foo.cpp", true, "cpp"},
+		{"src/foo.h", false, ""},
+		{"src/foo.go", false, ""},
+	}
+
+	for _, tt := range tests {
+		caps, ok := p.Match(tt.input)
+		if ok != tt.match {
+			t.Errorf("Match(%q) = %v, want %v", tt.input, ok, tt.match)
+		}
+		if ok && caps["ext"] != tt.ext {
+			t.Errorf("Match(%q) ext = %q, want %q", tt.input, caps["ext"], tt.ext)
+		}
+	}
+}
+
+func TestRegexConstraintMatch(t *testing.T) {
+	p, _, _ := ParsePattern("build/{name/[a-z]+}.o")
+
+	caps, ok := p.Match("build/foo.o")
+	if !ok || caps["name"] != "foo" {
+		t.Errorf("expected match for foo, got %v, %v", caps, ok)
+	}
+
+	_, ok = p.Match("build/Foo.o")
+	if ok {
+		t.Error("expected no match for Foo (uppercase)")
+	}
+
+	_, ok = p.Match("build/foo123.o")
+	if ok {
+		t.Error("expected no match for foo123 (contains digits)")
+	}
+}
+
+func TestConstraintExpand(t *testing.T) {
+	// Expand should work normally with constrained patterns
+	p, _, _ := ParsePattern("build/{name:test_*}.o")
+	got := p.Expand(map[string]string{"name": "test_foo"})
+	if got != "build/test_foo.o" {
+		t.Errorf("Expand = %q, want %q", got, "build/test_foo.o")
+	}
+}
+
+func TestParsePatternRegexError(t *testing.T) {
+	// *+ is invalid regex (nothing to repeat)
+	_, _, err := ParsePattern("build/{name/*+}.o")
+	if err == nil {
+		t.Error("expected error for invalid regex")
 	}
 }

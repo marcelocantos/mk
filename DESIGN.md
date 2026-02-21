@@ -206,6 +206,24 @@ Captures bind when a target is requested. Requesting
 Captures must not contain `/` — each capture matches within a single
 path segment.
 
+### Constrained captures
+
+Captures can be restricted with glob or regex constraints:
+
+```
+# Glob — comma-separated alternatives, shell wildcards
+src/{name}.{ext:c,cc,cpp}
+build/{name:test_*}.o: test/{name}.cc
+
+# Regex — full regular expression
+v{ver/\d+\.\d+}/release.tar.gz
+build/{name/[a-z]\w+}.o: src/{name}.c
+```
+
+`{name:glob}` uses shell glob syntax (`*`, `?`, `[...]`) with `,` for
+alternation. `{name/regex}` uses Go regular expressions. Both still
+enforce the no-`/` rule. Unconstrained `{name}` is unchanged.
+
 ### Disambiguation
 
 When multiple pattern rules could match a target, mk selects the

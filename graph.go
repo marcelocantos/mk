@@ -278,7 +278,7 @@ func (g *Graph) addRule(r Rule) error {
 	// Check if any target is a pattern
 	isPattern := false
 	for _, t := range expandedTargets {
-		if _, ok := ParsePattern(t); ok {
+		if _, ok, _ := ParsePattern(t); ok {
 			isPattern = true
 			break
 		}
@@ -287,15 +287,24 @@ func (g *Graph) addRule(r Rule) error {
 	if isPattern {
 		pr := patternRule{recipe: r.Recipe, keep: r.Keep, fingerprint: r.Fingerprint}
 		for _, t := range expandedTargets {
-			p, _ := ParsePattern(t)
+			p, _, err := ParsePattern(t)
+			if err != nil {
+				return err
+			}
 			pr.targetPatterns = append(pr.targetPatterns, p)
 		}
 		for _, p := range expandedPrereqs {
-			pat, _ := ParsePattern(p)
+			pat, _, err := ParsePattern(p)
+			if err != nil {
+				return err
+			}
 			pr.prereqPatterns = append(pr.prereqPatterns, pat)
 		}
 		for _, p := range expandedOrderOnly {
-			pat, _ := ParsePattern(p)
+			pat, _, err := ParsePattern(p)
+			if err != nil {
+				return err
+			}
 			pr.orderOnlyPrereqPatterns = append(pr.orderOnlyPrereqPatterns, pat)
 		}
 		g.patterns = append(g.patterns, pr)

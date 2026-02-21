@@ -1,6 +1,9 @@
 package mk
 
 import (
+	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -8,16 +11,38 @@ import (
 // e.g. "build/{config}/{name}.o" has captures ["config", "name"]
 // and parts ["build/", "/", ".o"].
 type Pattern struct {
-	Parts    []string // literal parts between captures
-	Captures []string // capture names
-	Raw      string   // original pattern string
+	Parts       []string             // literal parts between captures
+	Captures    []string             // capture names
+	Constraints []*CaptureConstraint // parallel to Captures; nil entry = unconstrained
+	Raw         string               // original pattern string
+}
+
+// CaptureConstraint restricts what a named capture can match.
+type CaptureConstraint struct {
+	Glob  string         // comma-separated alternatives, matched with filepath.Match
+	Regex *regexp.Regexp // compiled regex, anchored with ^...$
+}
+
+// Matches returns true if the candidate string satisfies the constraint.
+func (c *CaptureConstraint) Matches(s string) bool {
+	if c.Regex != nil {
+		return c.Regex.MatchString(s)
+	}
+	for _, alt := range strings.Split(c.Glob, ",") {
+		if matched, _ := filepath.Match(alt, s); matched {
+			return true
+		}
+	}
+	return false
 }
 
 // ParsePattern parses a pattern string into a Pattern.
-// Patterns use {name} for named captures.
-func ParsePattern(s string) (Pattern, bool) {
+// Patterns use {name} for named captures, {name:glob} for glob-constrained
+// captures, and {name/regex} for regex-constrained captures.
+func ParsePattern(s string) (Pattern, bool, error) {
 	var parts []string
 	var captures []string
+	var constraints []*CaptureConstraint
 
 	rest := s
 	var current string
@@ -29,31 +54,114 @@ func ParsePattern(s string) (Pattern, bool) {
 			current += rest
 			break
 		}
-		end := strings.IndexByte(rest[idx:], '}')
+
+		// Classify capture content by scanning for :, /, or }
+		inner := rest[idx+1:]
+		name, constraint, end, err := parseCapture(inner)
+		if err != nil {
+			return Pattern{}, false, fmt.Errorf("pattern %q: %w", s, err)
+		}
 		if end < 0 {
+			// No closing } found
 			current += rest
 			break
 		}
-		end += idx
 
 		hasCapture = true
 		current += rest[:idx]
 		parts = append(parts, current)
 		current = ""
-		captures = append(captures, rest[idx+1:end])
-		rest = rest[end+1:]
+		captures = append(captures, name)
+		constraints = append(constraints, constraint)
+		rest = inner[end+1:] // skip past the closing }
 	}
 	parts = append(parts, current)
 
 	if !hasCapture {
-		return Pattern{Raw: s}, false
+		return Pattern{Raw: s}, false, nil
 	}
 
 	return Pattern{
-		Parts:    parts,
-		Captures: captures,
-		Raw:      s,
-	}, true
+		Parts:       parts,
+		Captures:    captures,
+		Constraints: constraints,
+		Raw:         s,
+	}, true, nil
+}
+
+// parseCapture parses the content after '{' and returns the capture name,
+// an optional constraint, and the index of the closing '}' within inner.
+// Returns end=-1 if no closing } is found.
+func parseCapture(inner string) (name string, constraint *CaptureConstraint, end int, err error) {
+	// Scan for the first ':', '/', or '}' to classify
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '}':
+			// Simple unconstrained capture: {name}
+			return inner[:i], nil, i, nil
+
+		case ':':
+			// Glob capture: {name:glob}
+			closeBrace := strings.IndexByte(inner[i+1:], '}')
+			if closeBrace < 0 {
+				return "", nil, -1, nil
+			}
+			closeBrace += i + 1
+			glob := inner[i+1 : closeBrace]
+			return inner[:i], &CaptureConstraint{Glob: glob}, closeBrace, nil
+
+		case '/':
+			// Regex capture: {name/regex}
+			// Walk regex syntax to find the real closing }
+			reStart := i + 1
+			reEnd := findRegexEnd(inner, reStart)
+			if reEnd < 0 {
+				return "", nil, -1, nil
+			}
+			reStr := inner[reStart:reEnd]
+			compiled, err := regexp.Compile("^(?:" + reStr + ")$")
+			if err != nil {
+				return "", nil, -1, fmt.Errorf("invalid regex in capture %q: %w", inner[:i], err)
+			}
+			return inner[:i], &CaptureConstraint{Regex: compiled}, reEnd, nil
+		}
+	}
+	return "", nil, -1, nil
+}
+
+// findRegexEnd walks regex syntax starting at pos within s, tracking
+// escapes (\x), character classes ([...]), and quantifiers ({n,m}) to
+// find the } that closes the capture (not one that's part of the regex).
+// Returns the index of that }, or -1 if not found.
+func findRegexEnd(s string, pos int) int {
+	inCharClass := false
+	escaped := false
+	for i := pos; i < len(s); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		c := s[i]
+		switch {
+		case c == '\\':
+			escaped = true
+		case inCharClass:
+			if c == ']' {
+				inCharClass = false
+			}
+		case c == '[':
+			inCharClass = true
+		case c == '{':
+			// Regex quantifier like {2,4} — find matching }
+			j := strings.IndexByte(s[i+1:], '}')
+			if j >= 0 {
+				i += j + 1 // skip past the quantifier's }
+			}
+		case c == '}':
+			return i
+		}
+	}
+	return -1
 }
 
 // Match attempts to match a concrete string against this pattern.
@@ -89,6 +197,12 @@ func (p Pattern) match(s string, idx int, captures map[string]string) (map[strin
 
 	if idx+1 >= len(p.Parts)-1 && suffix == "" && idx+1 >= len(p.Captures) {
 		// Last capture, no suffix after it — capture the rest
+		if strings.Contains(s, "/") {
+			return nil, false
+		}
+		if !p.constraintMatches(idx, s) {
+			return nil, false
+		}
 		if existing, ok := captures[captureName]; ok {
 			if existing != s {
 				return nil, false
@@ -104,6 +218,11 @@ func (p Pattern) match(s string, idx int, captures map[string]string) (map[strin
 		candidate := s[:i]
 		// Don't allow captures to contain /
 		if strings.Contains(candidate, "/") {
+			continue
+		}
+
+		// Check constraint
+		if !p.constraintMatches(idx, candidate) {
 			continue
 		}
 
@@ -125,6 +244,15 @@ func (p Pattern) match(s string, idx int, captures map[string]string) (map[strin
 	}
 
 	return nil, false
+}
+
+// constraintMatches checks if the candidate satisfies the constraint for
+// capture at the given index. Returns true if unconstrained.
+func (p Pattern) constraintMatches(idx int, candidate string) bool {
+	if idx >= len(p.Constraints) || p.Constraints[idx] == nil {
+		return true
+	}
+	return p.Constraints[idx].Matches(candidate)
 }
 
 // Expand substitutes capture values into a pattern to produce a concrete string.
