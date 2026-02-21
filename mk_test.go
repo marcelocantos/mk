@@ -2037,6 +2037,31 @@ end
 	}
 }
 
+func TestRecursiveDefinitionError(t *testing.T) {
+	tests := []struct {
+		input string
+		isErr bool
+	}{
+		{"foo = $foo bar", true},
+		{"foo = ${foo} bar", true},
+		{"foo = $foobar", false},   // different variable name
+		{"foo = $bar $foo", true},  // self-ref not at start
+		{"foo += $foo", false},     // append is fine
+		{"foo ?= $foo", false},     // conditional is fine
+		{"lazy foo = $foo", true},  // lazy self-ref is recursive
+	}
+
+	for _, tt := range tests {
+		_, err := Parse(strings.NewReader(tt.input))
+		if tt.isErr && err == nil {
+			t.Errorf("Parse(%q): expected error, got nil", tt.input)
+		}
+		if !tt.isErr && err != nil {
+			t.Errorf("Parse(%q): unexpected error: %v", tt.input, err)
+		}
+	}
+}
+
 func TestStdlibCInclude(t *testing.T) {
 	dir := t.TempDir()
 	oldDir, _ := os.Getwd()

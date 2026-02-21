@@ -133,12 +133,18 @@ func (p *parser) parseStatement(trimmed string) (Node, error) {
 	// Lazy variable
 	if rest, ok := strings.CutPrefix(trimmed, "lazy "); ok {
 		if name, value, ok := parseAssign(rest); ok {
+			if containsVarRef(value, name) {
+				return nil, fmt.Errorf("line %d: recursive definition: %s references itself", lineNum, name)
+			}
 			return VarAssign{Name: name, Op: OpSet, Value: value, Lazy: true, Line: lineNum}, nil
 		}
 	}
 
 	// Variable assignment
 	if name, value, ok := parseAssign(trimmed); ok {
+		if containsVarRef(value, name) {
+			return nil, fmt.Errorf("line %d: recursive definition: %s references itself", lineNum, name)
+		}
 		return VarAssign{Name: name, Op: OpSet, Value: value, Line: lineNum}, nil
 	}
 	if name, value, ok := parseAppend(trimmed); ok {
@@ -517,4 +523,35 @@ func isValidVarName(name string) bool {
 		}
 	}
 	return true
+}
+
+// containsVarRef reports whether value contains a variable reference to name,
+// i.e. $name (followed by non-identifier or end) or ${name}.
+func containsVarRef(value, name string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] != '$' {
+			continue
+		}
+		i++
+		if i >= len(value) {
+			break
+		}
+		switch {
+		case value[i] == '{':
+			end := strings.IndexByte(value[i:], '}')
+			if end >= 0 && value[i+1:i+end] == name {
+				return true
+			}
+		case isIdentStart(value[i]):
+			start := i
+			for i < len(value) && isIdentCont(value[i]) {
+				i++
+			}
+			if value[start:i] == name {
+				return true
+			}
+			i-- // loop will increment
+		}
+	}
+	return false
 }
