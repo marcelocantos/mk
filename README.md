@@ -20,6 +20,8 @@ directories. mk fixes all of this — content hashing, clean syntax,
 a build database that tracks everything, and a single dependency graph
 across the whole project — while keeping the model that works.
 
+[See the detailed analysis.](docs/why-mk.md)
+
 ## Install
 
 ```
