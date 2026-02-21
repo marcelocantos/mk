@@ -404,6 +404,18 @@ func (g *Graph) evalPatternInclude(pattern, _ string) error {
 func (g *Graph) doInclude(path, alias string) error {
 	f, err := os.Open(path)
 	if err != nil {
+		// Try embedded stdlib
+		if ef, embedErr := stdlibFS.Open(path); embedErr == nil {
+			defer ef.Close()
+			ast, parseErr := Parse(ef)
+			if parseErr != nil {
+				return fmt.Errorf("parsing %s: %w", path, parseErr)
+			}
+			if alias == "" {
+				return g.evaluate(ast.Stmts)
+			}
+			return g.evalScopedInclude(path, alias, ast)
+		}
 		return fmt.Errorf("cannot open %s: %w", path, err)
 	}
 	defer f.Close()
@@ -418,7 +430,10 @@ func (g *Graph) doInclude(path, alias string) error {
 		return g.evaluate(ast.Stmts)
 	}
 
-	// Scoped include — isolate variables, rebase paths
+	return g.evalScopedInclude(path, alias, ast)
+}
+
+func (g *Graph) evalScopedInclude(path, alias string, ast *File) error {
 	parentVars := g.vars
 	parentPrefix := g.scopePrefix
 
@@ -431,7 +446,7 @@ func (g *Graph) doInclude(path, alias string) error {
 		g.scopePrefix = alias
 	}
 
-	err = g.evaluate(ast.Stmts)
+	err := g.evaluate(ast.Stmts)
 
 	// Export child-set variables as alias.varname to parent
 	childSnapshot := childVars.Snapshot()

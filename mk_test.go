@@ -2037,6 +2037,166 @@ end
 	}
 }
 
+func TestStdlibCInclude(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "hello.c"), []byte("int main() { return 0; }"), 0o644)
+
+	mkfile := `
+include std/c.mk
+
+app: hello.o
+    $cc $ldflags -o $target $inputs
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// cc should be set by std/c.mk
+	if got := vars.Get("cc"); got != "cc" {
+		t.Errorf("cc = %q, want %q", got, "cc")
+	}
+
+	// Pattern rule from std/c.mk should resolve hello.o
+	rule, err := graph.Resolve("hello.o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rule.prereqs) != 1 || rule.prereqs[0] != "hello.c" {
+		t.Errorf("prereqs = %v, want [hello.c]", rule.prereqs)
+	}
+}
+
+func TestStdlibCxxInclude(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	mkfile := `include std/cxx.mk`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := vars.Get("cxx"); got != "c++" {
+		t.Errorf("cxx = %q, want %q", got, "c++")
+	}
+}
+
+func TestStdlibGoInclude(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	mkfile := `include std/go.mk`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// !build task should exist
+	rule, err := graph.Resolve("build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.isTask {
+		t.Error("expected build to be a task")
+	}
+
+	// !test task should exist
+	rule, err = graph.Resolve("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.isTask {
+		t.Error("expected test to be a task")
+	}
+}
+
+func TestStdlibOverride(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	mkfile := `
+cc = clang
+include std/c.mk
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// cc should remain clang because std/c.mk uses ?=
+	if got := vars.Get("cc"); got != "clang" {
+		t.Errorf("cc = %q, want %q (should not be overridden by std/c.mk)", got, "clang")
+	}
+}
+
+func TestLocalFileOverridesStdlib(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	// Create a local std/c.mk that sets cc to something custom
+	os.MkdirAll(filepath.Join(dir, "std"), 0o755)
+	os.WriteFile(filepath.Join(dir, "std", "c.mk"), []byte("cc = local-cc\n"), 0o644)
+
+	mkfile := `include std/c.mk`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Local file should take priority over embedded stdlib
+	if got := vars.Get("cc"); got != "local-cc" {
+		t.Errorf("cc = %q, want %q (local file should override embedded)", got, "local-cc")
+	}
+}
+
 // createTarball creates a .tar.gz from the given files in the directory.
 func createTarball(t *testing.T, dir, name string, files []string) {
 	t.Helper()

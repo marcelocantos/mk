@@ -510,6 +510,11 @@ languages:
 
 These are opt-in. mk has no implicit rules and no built-in variables.
 
+Standard library files are embedded in the mk binary — `include std/c.mk`
+works without any installation step. A local `std/c.mk` file takes
+priority over the embedded version. All variables use `?=` so they can be
+overridden before the include.
+
 ---
 
 ## 11. Parallel execution
