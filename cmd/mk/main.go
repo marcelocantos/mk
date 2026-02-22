@@ -13,6 +13,8 @@ import (
 	"github.com/marcelocantos/mk"
 )
 
+var version = "dev"
+
 func main() {
 	var (
 		file        = flag.String("f", "mkfile", "mkfile to read")
@@ -24,11 +26,17 @@ func main() {
 		graph       = flag.Bool("graph", false, "print dependency subgraph")
 		showState   = flag.Bool("state", false, "show build database entries")
 		complete    = flag.Bool("complete", false, "output completions (targets and configs)")
-		agentsGuide = flag.Bool("agents-guide", false, "print the mk agents guide")
+		agentsGuide = flag.Bool("help-agent", false, "print the mk agents guide")
+		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
 
 	args := flag.Args()
+
+	if *showVersion {
+		fmt.Println("mk", version)
+		return
+	}
 
 	if *agentsGuide {
 		fmt.Print(mk.AgentsGuide)

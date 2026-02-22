@@ -27,7 +27,7 @@ jobs:
           for pair in darwin/arm64 linux/amd64 linux/arm64; do
             os="${pair%/*}"
             arch="${pair#*/}"
-            GOOS=$os GOARCH=$arch go build -o mk ./cmd/mk
+            GOOS=$os GOARCH=$arch go build -ldflags "-s -w -X main.version=${GITHUB_REF#refs/tags/}" -o mk ./cmd/mk
             tar czf "mk-${version}-${os}-${arch}.tar.gz" mk completions/
             rm mk
           done
