@@ -14,8 +14,8 @@ import (
 // Vars is a variable store. All variables are also environment variables.
 type Vars struct {
 	vals  map[string]string
-	lazy  map[string]string    // unevaluated lazy expressions
-	funcs map[string]*FuncDef  // user-defined functions
+	lazy  map[string]string   // unevaluated lazy expressions
+	funcs map[string]*FuncDef // user-defined functions
 }
 
 func NewVars() *Vars {

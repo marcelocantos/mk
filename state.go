@@ -38,7 +38,7 @@ type BuildState struct {
 // TargetState records the state of a target at its last successful build.
 type TargetState struct {
 	RecipeHash      string            `json:"recipe_hash"`
-	InputHashes     map[string]string `json:"input_hashes"`                // prereq path → content hash
+	InputHashes     map[string]string `json:"input_hashes"` // prereq path → content hash
 	OutputHash      string            `json:"output_hash"`
 	FingerprintHash string            `json:"fingerprint_hash,omitempty"` // hash of fingerprint command output
 	Prereqs         []string          `json:"prereqs"`

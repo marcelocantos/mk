@@ -2169,11 +2169,11 @@ func TestRecursiveDefinitionError(t *testing.T) {
 	}{
 		{"foo = $foo bar", true},
 		{"foo = ${foo} bar", true},
-		{"foo = $foobar", false},   // different variable name
-		{"foo = $bar $foo", true},  // self-ref not at start
-		{"foo += $foo", false},     // append is fine
-		{"foo ?= $foo", false},     // conditional is fine
-		{"lazy foo = $foo", true},  // lazy self-ref is recursive
+		{"foo = $foobar", false},  // different variable name
+		{"foo = $bar $foo", true}, // self-ref not at start
+		{"foo += $foo", false},    // append is fine
+		{"foo ?= $foo", false},    // conditional is fine
+		{"lazy foo = $foo", true}, // lazy self-ref is recursive
 	}
 
 	for _, tt := range tests {

@@ -27,7 +27,7 @@ type Executor struct {
 
 	mu       sync.Mutex
 	building map[string]*buildResult // singleflight dedup
-	sem      chan struct{}            // recipe concurrency limiter; nil = unlimited
+	sem      chan struct{}           // recipe concurrency limiter; nil = unlimited
 	outputMu sync.Mutex              // serializes buffered output flushes
 	cache    *HashCache              // file content hash cache
 }

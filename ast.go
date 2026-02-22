@@ -15,11 +15,11 @@ type File struct {
 
 // VarAssign represents a variable assignment: name = value, name += value, lazy name = value.
 type VarAssign struct {
-	Name   string
-	Op     AssignOp
-	Value  string
-	Lazy   bool
-	Line   int
+	Name  string
+	Op    AssignOp
+	Value string
+	Lazy  bool
+	Line  int
 }
 
 type AssignOp int
