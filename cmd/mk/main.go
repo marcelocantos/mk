@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -40,6 +41,12 @@ func main() {
 	}
 
 	if *agentsGuide {
+		var buf bytes.Buffer
+		flag.CommandLine.SetOutput(&buf)
+		fmt.Fprintf(&buf, "Usage of mk:\n")
+		flag.PrintDefaults()
+		flag.CommandLine.SetOutput(os.Stderr)
+		fmt.Print(buf.String())
 		fmt.Print(mk.AgentsGuide)
 		return
 	}
