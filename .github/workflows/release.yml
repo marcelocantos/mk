@@ -60,6 +60,7 @@ jobs:
                   echo $greeting > $target
             EOS
             system bin/"mk", "-n", "hello.txt"
+          version: ${{ github.ref_name }}
           target_darwin_amd64: false
           target_darwin_arm64: true
           target_linux_amd64: true
