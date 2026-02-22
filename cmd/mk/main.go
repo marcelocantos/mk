@@ -15,19 +15,25 @@ import (
 
 func main() {
 	var (
-		file      = flag.String("f", "mkfile", "mkfile to read")
-		verbose   = flag.Bool("v", false, "verbose output")
-		force     = flag.Bool("B", false, "unconditional rebuild (ignore state)")
-		dryRun    = flag.Bool("n", false, "dry run (print commands without executing)")
-		jobs      = flag.Int("j", -1, "parallel jobs (-1=auto, 0=unlimited)")
-		why       = flag.Bool("why", false, "explain why targets are stale")
-		graph     = flag.Bool("graph", false, "print dependency subgraph")
-		showState = flag.Bool("state", false, "show build database entries")
-		complete  = flag.Bool("complete", false, "output completions (targets and configs)")
+		file        = flag.String("f", "mkfile", "mkfile to read")
+		verbose     = flag.Bool("v", false, "verbose output")
+		force       = flag.Bool("B", false, "unconditional rebuild (ignore state)")
+		dryRun      = flag.Bool("n", false, "dry run (print commands without executing)")
+		jobs        = flag.Int("j", -1, "parallel jobs (-1=auto, 0=unlimited)")
+		why         = flag.Bool("why", false, "explain why targets are stale")
+		graph       = flag.Bool("graph", false, "print dependency subgraph")
+		showState   = flag.Bool("state", false, "show build database entries")
+		complete    = flag.Bool("complete", false, "output completions (targets and configs)")
+		agentsGuide = flag.Bool("agents-guide", false, "print the mk agents guide")
 	)
 	flag.Parse()
 
 	args := flag.Args()
+
+	if *agentsGuide {
+		fmt.Print(mk.AgentsGuide)
+		return
+	}
 
 	if err := run(*file, *verbose, *force, *dryRun, *jobs, *why, *graph, *showState, *complete, args); err != nil {
 		fmt.Fprintf(os.Stderr, "mk: %s\n", err)

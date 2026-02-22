@@ -7,3 +7,6 @@ import "embed"
 
 //go:embed std/*.mk
 var stdlibFS embed.FS
+
+//go:embed agents-guide.md
+var AgentsGuide string

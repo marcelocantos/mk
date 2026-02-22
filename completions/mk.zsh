@@ -12,6 +12,7 @@ _mk() {
         '--why[explain why targets are stale]'
         '--graph[print dependency subgraph]'
         '--state[show build database entries]'
+        '--agents-guide[print the mk agents guide]'
     )
 
     # Get targets and configs from mkfile
