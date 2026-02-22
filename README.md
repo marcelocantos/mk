@@ -157,4 +157,4 @@ $ mk -n test             # dry run
 
 ## License
 
-TBD
+Apache 2.0 — see [LICENSE](LICENSE).
