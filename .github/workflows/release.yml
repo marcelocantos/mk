@@ -32,16 +32,15 @@ jobs:
             rm mk
           done
 
-      - name: Create release
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           version="${tag#v}"
-          gh release create "$tag" \
-            --title "$tag" \
-            --generate-notes \
-            mk-${version}-*.tar.gz
+          # Create release if it doesn't exist yet
+          gh release create "$tag" --title "$tag" --generate-notes 2>/dev/null || true
+          gh release upload "$tag" mk-${version}-*.tar.gz --clobber
 
       - name: Update Homebrew formula
         uses: Justintime50/homebrew-releaser@v3
