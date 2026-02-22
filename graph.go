@@ -18,7 +18,7 @@ type Graph struct {
 	state       *BuildState
 	scopePrefix string // current include scope path prefix (e.g., "lib/")
 
-	rawRules      []rawRuleEntry       // stored for re-expansion after config application
+	rawRules      []rawRuleEntry        // stored for re-expansion after config application
 	configs       map[string]*ConfigDef // registered config definitions
 	activeConfigs []string              // configs requested via CLI
 }
@@ -74,12 +74,12 @@ func (g *Graph) WhyRebuild(target string) ([]string, error) {
 }
 
 type patternRule struct {
-	targetPatterns         []Pattern
-	prereqPatterns         []Pattern
+	targetPatterns          []Pattern
+	prereqPatterns          []Pattern
 	orderOnlyPrereqPatterns []Pattern
-	recipe                 []string
-	keep                   bool
-	fingerprint            string
+	recipe                  []string
+	keep                    bool
+	fingerprint             string
 }
 
 // BuildGraph constructs a dependency graph from a parsed file.
@@ -615,6 +615,41 @@ func (g *Graph) DefaultTarget() string {
 		return g.rules[0].target
 	}
 	return ""
+}
+
+// Targets returns all explicit target names (including tasks).
+func (g *Graph) Targets() []string {
+	seen := map[string]bool{}
+	var targets []string
+	for _, r := range g.rules {
+		for _, t := range r.targets {
+			if !seen[t] {
+				seen[t] = true
+				targets = append(targets, t)
+			}
+		}
+	}
+	return targets
+}
+
+// Tasks returns all task target names (without the ! prefix).
+func (g *Graph) Tasks() []string {
+	var tasks []string
+	for _, r := range g.rules {
+		if r.isTask {
+			tasks = append(tasks, r.target)
+		}
+	}
+	return tasks
+}
+
+// ConfigNames returns all defined config names.
+func (g *Graph) ConfigNames() []string {
+	var names []string
+	for name := range g.configs {
+		names = append(names, name)
+	}
+	return names
 }
 
 func fileExists(path string) bool {

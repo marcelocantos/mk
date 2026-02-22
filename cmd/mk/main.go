@@ -23,18 +23,19 @@ func main() {
 		why       = flag.Bool("why", false, "explain why targets are stale")
 		graph     = flag.Bool("graph", false, "print dependency subgraph")
 		showState = flag.Bool("state", false, "show build database entries")
+		complete  = flag.Bool("complete", false, "output completions (targets and configs)")
 	)
 	flag.Parse()
 
 	args := flag.Args()
 
-	if err := run(*file, *verbose, *force, *dryRun, *jobs, *why, *graph, *showState, args); err != nil {
+	if err := run(*file, *verbose, *force, *dryRun, *jobs, *why, *graph, *showState, *complete, args); err != nil {
 		fmt.Fprintf(os.Stderr, "mk: %s\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showState bool, args []string) error {
+func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showState, complete bool, args []string) error {
 	// Process command-line arguments: targets, configs, and variable overrides
 	vars := mk.NewVars()
 	var buildTargets []string
@@ -63,6 +64,30 @@ func run(file string, verbose, force, dryRun bool, jobs int, why, graph, showSta
 
 	// Config suffix for state file isolation
 	configSuffix := strings.Join(activeConfigs, "-")
+
+	// --complete: output target and config names for shell completion
+	if complete {
+		f, err := os.Open(file)
+		if err != nil {
+			return nil // silent failure for completion
+		}
+		defer f.Close()
+		ast, err := mk.Parse(f)
+		if err != nil {
+			return nil
+		}
+		g, err := mk.BuildGraph(ast, vars, &mk.BuildState{Targets: make(map[string]*mk.TargetState)}, nil)
+		if err != nil {
+			return nil
+		}
+		for _, t := range g.Targets() {
+			fmt.Println(t)
+		}
+		for _, c := range g.ConfigNames() {
+			fmt.Println(c)
+		}
+		return nil
+	}
 
 	// --state only needs the build database
 	if showState {
