@@ -2037,6 +2037,128 @@ end
 	}
 }
 
+func TestPatternPrereqMerge(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "foo.c"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(dir, "foo.h"), []byte(""), 0o644)
+
+	mkfile := `
+{name}.o: {name}.c
+    cc -c $input -o $target
+
+{name}.o: {name}.h
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rule, err := graph.Resolve("foo.o")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have merged prereqs from both patterns
+	if len(rule.prereqs) != 2 {
+		t.Fatalf("prereqs = %v, want [foo.c foo.h]", rule.prereqs)
+	}
+	if rule.prereqs[0] != "foo.c" || rule.prereqs[1] != "foo.h" {
+		t.Errorf("prereqs = %v, want [foo.c foo.h]", rule.prereqs)
+	}
+
+	// Should have the recipe from the first pattern
+	if len(rule.recipe) != 1 {
+		t.Errorf("recipe = %v, want 1 line", rule.recipe)
+	}
+}
+
+func TestPatternAmbiguousRecipeError(t *testing.T) {
+	mkfile := `
+{name}.o: {name}.c
+    cc -c $input -o $target
+
+{name}.o: {name}.s
+    as $input -o $target
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "foo.c"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(dir, "foo.s"), []byte(""), 0o644)
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = graph.Resolve("foo.o")
+	if err == nil {
+		t.Fatal("expected error for ambiguous pattern rules")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error = %q, want ambiguous pattern error", err.Error())
+	}
+}
+
+func TestPatternMergeOrderOnly(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	os.WriteFile(filepath.Join(dir, "foo.c"), []byte(""), 0o644)
+
+	mkfile := `
+{name}.o: {name}.c
+    cc -c $input -o $target
+
+{name}.o: | builddir
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rule, err := graph.Resolve("foo.o")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(rule.prereqs) != 1 || rule.prereqs[0] != "foo.c" {
+		t.Errorf("prereqs = %v, want [foo.c]", rule.prereqs)
+	}
+	if len(rule.orderOnlyPrereqs) != 1 || rule.orderOnlyPrereqs[0] != "builddir" {
+		t.Errorf("orderOnlyPrereqs = %v, want [builddir]", rule.orderOnlyPrereqs)
+	}
+}
+
 func TestRecursiveDefinitionError(t *testing.T) {
 	tests := []struct {
 		input string

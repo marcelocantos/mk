@@ -224,11 +224,18 @@ build/{name/[a-z]\w+}.o: src/{name}.c
 alternation. `{name/regex}` uses Go regular expressions. Both still
 enforce the no-`/` rule. Unconstrained `{name}` is unchanged.
 
-### Disambiguation
+### Multiple matching patterns
 
-When multiple pattern rules could match a target, mk selects the
-rule with the most literal (non-capture) characters. Ties are an
-error.
+When multiple pattern rules match a target, mk merges their
+prerequisites. At most one matching rule may have a recipe;
+multiple recipes for the same target is an error.
+
+```
+{name}.o: {name}.c
+    $cc $cflags -c $input -o $target
+
+{name}.o: {name}.h       # adds header dependency, no recipe
+```
 
 ---
 

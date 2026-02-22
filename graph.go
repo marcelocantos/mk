@@ -474,18 +474,14 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 		}
 	}
 
-	// Try pattern rules
+	// Try pattern rules — collect ALL matches and merge
+	var merged *resolvedRule
+	recipeCount := 0
 	for _, pr := range g.patterns {
 		for _, tp := range pr.targetPatterns {
 			captures, ok := tp.Match(target)
 			if !ok {
 				continue
-			}
-
-			// Expand ALL target patterns with captures
-			var targets []string
-			for _, tp2 := range pr.targetPatterns {
-				targets = append(targets, tp2.Expand(captures))
 			}
 
 			// Expand prerequisite patterns with captures
@@ -500,40 +496,63 @@ func (g *Graph) Resolve(target string) (*resolvedRule, error) {
 				orderOnly = append(orderOnly, pp.Expand(captures))
 			}
 
-			// Expand captures in recipe
-			var recipe []string
-			for _, line := range pr.recipe {
-				expanded := line
-				for k, v := range captures {
-					expanded = strings.ReplaceAll(expanded, "{"+k+"}", v)
+			if merged == nil {
+				// First match — initialise with targets
+				var targets []string
+				for _, tp2 := range pr.targetPatterns {
+					targets = append(targets, tp2.Expand(captures))
 				}
-				recipe = append(recipe, expanded)
+				merged = &resolvedRule{
+					target:           targets[0],
+					targets:          targets,
+					prereqs:          prereqs,
+					orderOnlyPrereqs: orderOnly,
+				}
+			} else {
+				// Subsequent match — merge prerequisites
+				merged.prereqs = append(merged.prereqs, prereqs...)
+				merged.orderOnlyPrereqs = append(merged.orderOnlyPrereqs, orderOnly...)
 			}
 
-			// Use the first capture value as stem
-			var stem string
-			if len(tp.Captures) > 0 {
-				stem = captures[tp.Captures[0]]
+			if len(pr.recipe) > 0 {
+				recipeCount++
+				if recipeCount > 1 {
+					return nil, fmt.Errorf("ambiguous pattern rules for %q: multiple rules have recipes", target)
+				}
+
+				// Expand captures in recipe
+				var recipe []string
+				for _, line := range pr.recipe {
+					expanded := line
+					for k, v := range captures {
+						expanded = strings.ReplaceAll(expanded, "{"+k+"}", v)
+					}
+					recipe = append(recipe, expanded)
+				}
+
+				// Expand captures in fingerprint command
+				fp := pr.fingerprint
+				for k, v := range captures {
+					fp = strings.ReplaceAll(fp, "{"+k+"}", v)
+				}
+
+				// Use the first capture value as stem
+				var stem string
+				if len(tp.Captures) > 0 {
+					stem = captures[tp.Captures[0]]
+				}
+
+				merged.recipe = recipe
+				merged.keep = pr.keep
+				merged.fingerprint = fp
+				merged.stem = stem
 			}
 
-			// Expand captures in fingerprint command
-			fp := pr.fingerprint
-			for k, v := range captures {
-				fp = strings.ReplaceAll(fp, "{"+k+"}", v)
-			}
-
-			r := &resolvedRule{
-				target:           targets[0],
-				targets:          targets,
-				prereqs:          prereqs,
-				orderOnlyPrereqs: orderOnly,
-				recipe:           recipe,
-				keep:             pr.keep,
-				fingerprint:      fp,
-				stem:             stem,
-			}
-			return r, nil
+			break // matched this pattern rule, move to next
 		}
+	}
+	if merged != nil {
+		return merged, nil
 	}
 
 	// Check if the target exists as a file (leaf node)
