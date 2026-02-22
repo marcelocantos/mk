@@ -41,3 +41,12 @@ jobs:
             --title "$tag" \
             --generate-notes \
             mk-${tag}-*.tar.gz
+
+      - name: Update Homebrew formula
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: mk
+          homebrew-tap: marcelocantos/homebrew-tap
+          download-url: https://github.com/marcelocantos/mk/archive/refs/tags/${{ github.ref_name }}.tar.gz
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
