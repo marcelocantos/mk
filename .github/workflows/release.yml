@@ -23,12 +23,12 @@ jobs:
 
       - name: Build binaries
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
+          version="${GITHUB_REF#refs/tags/v}"
           for pair in darwin/arm64 linux/amd64 linux/arm64; do
             os="${pair%/*}"
             arch="${pair#*/}"
             GOOS=$os GOARCH=$arch go build -o mk ./cmd/mk
-            tar czf "mk-${tag}-${os}-${arch}.tar.gz" mk
+            tar czf "mk-${version}-${os}-${arch}.tar.gz" mk completions/
             rm mk
           done
 
@@ -37,16 +37,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
           gh release create "$tag" \
             --title "$tag" \
             --generate-notes \
-            mk-${tag}-*.tar.gz
+            mk-${version}-*.tar.gz
 
       - name: Update Homebrew formula
-        uses: mislav/bump-homebrew-formula-action@v3
+        uses: Justintime50/homebrew-releaser@v3
         with:
-          formula-name: mk
-          homebrew-tap: marcelocantos/homebrew-tap
-          download-url: https://github.com/marcelocantos/mk/archive/refs/tags/${{ github.ref_name }}.tar.gz
-        env:
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          homebrew_owner: marcelocantos
+          homebrew_tap: homebrew-tap
+          github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          install: |-
+            bin.install "mk"
+            bash_completion.install "completions/mk.bash" => "mk"
+            zsh_completion.install "completions/mk.zsh" => "_mk"
+          test: |-
+            (testpath/"mkfile").write <<~EOS
+              greeting = world
+
+              hello.txt:
+                  echo $greeting > $target
+            EOS
+            system bin/"mk", "-n", "hello.txt"
+          target_darwin_amd64: false
+          target_darwin_arm64: true
+          target_linux_amd64: true
+          target_linux_arm64: true
