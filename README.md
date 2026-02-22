@@ -8,7 +8,8 @@ targets rebuilt — and fixes what doesn't: content hashing instead of
 timestamps, clean syntax, no tab-vs-space traps, no `$$` escaping, no
 implicit rules.
 
-See [DESIGN.md](DESIGN.md) for the full specification.
+See [DESIGN.md](DESIGN.md) for the full specification. There is also an
+[agents guide](agents-guide.md) optimized for AI coding assistants.
 
 ## Why mk?
 
