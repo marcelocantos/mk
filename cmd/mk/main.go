@@ -17,6 +17,7 @@ var version = "dev"
 
 func main() {
 	var (
+		dir         = flag.String("C", "", "change to directory before doing anything")
 		file        = flag.String("f", "mkfile", "mkfile to read")
 		verbose     = flag.Bool("v", false, "verbose output")
 		force       = flag.Bool("B", false, "unconditional rebuild (ignore state)")
@@ -41,6 +42,13 @@ func main() {
 	if *agentsGuide {
 		fmt.Print(mk.AgentsGuide)
 		return
+	}
+
+	if *dir != "" {
+		if err := os.Chdir(*dir); err != nil {
+			fmt.Fprintf(os.Stderr, "mk: %s\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if err := run(*file, *verbose, *force, *dryRun, *jobs, *why, *graph, *showState, *complete, args); err != nil {

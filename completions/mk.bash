@@ -3,7 +3,7 @@ _mk() {
 
     # Complete flags
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "-f -v -B -n -j --why --graph --state --help-agent --version" -- "$cur"))
+        COMPREPLY=($(compgen -W "-C -f -v -B -n -j --why --graph --state --help-agent --version" -- "$cur"))
         return
     fi
 

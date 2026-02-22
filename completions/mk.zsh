@@ -4,6 +4,7 @@ _mk() {
     local -a targets flags
 
     flags=(
+        '-C[change to directory before doing anything]:dir:_directories'
         '-f[mkfile to read]:file:_files'
         '-v[verbose output]'
         '-B[unconditional rebuild]'
