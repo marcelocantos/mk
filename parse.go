@@ -304,6 +304,7 @@ func (p *parser) parseLoop(line string, lineNum int) (Node, error) {
 
 func (p *parser) parseRecipe() []string {
 	var lines []string
+	indent := ""
 	for {
 		line, ok := p.peek()
 		if !ok {
@@ -317,7 +318,11 @@ func (p *parser) parseRecipe() []string {
 			break
 		}
 		p.pos++
-		lines = append(lines, strings.TrimSpace(line))
+		if indent == "" {
+			// First recipe line sets the base indentation.
+			indent = line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		}
+		lines = append(lines, strings.TrimPrefix(line, indent))
 	}
 	return lines
 }
