@@ -1037,6 +1037,180 @@ func TestScopedVariableExpansion(t *testing.T) {
 	}
 }
 
+func TestSiblingCrossReference(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	// Create lib/ with a library target
+	os.MkdirAll(filepath.Join(dir, "lib"), 0o755)
+	os.WriteFile(filepath.Join(dir, "lib", "mkfile"), []byte(`
+build/libfoo.a: foo.o
+    ar rcs $target $input
+`), 0o644)
+	os.WriteFile(filepath.Join(dir, "lib", "foo.o"), []byte{}, 0o644)
+
+	// Create app/ that references ../lib/build/libfoo.a
+	os.MkdirAll(filepath.Join(dir, "app"), 0o755)
+	os.WriteFile(filepath.Join(dir, "app", "mkfile"), []byte(`
+build/app: main.o ../lib/build/libfoo.a
+    gcc -o $target $inputs
+`), 0o644)
+	os.WriteFile(filepath.Join(dir, "app", "main.o"), []byte{}, 0o644)
+
+	mkfile := `
+include lib/mkfile as lib
+include app/mkfile as app
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// app/build/app should depend on lib/build/libfoo.a via ../lib/ resolution
+	rule, err := graph.Resolve("app/build/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []string{"app/main.o", "lib/build/libfoo.a"}
+	if len(rule.prereqs) != 2 || rule.prereqs[0] != expected[0] || rule.prereqs[1] != expected[1] {
+		t.Errorf("prereqs = %v, want %v", rule.prereqs, expected)
+	}
+
+	// lib/build/libfoo.a should also be resolvable in the same graph
+	libRule, err := graph.Resolve("lib/build/libfoo.a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if libRule.target != "lib/build/libfoo.a" {
+		t.Errorf("target = %q, want %q", libRule.target, "lib/build/libfoo.a")
+	}
+}
+
+func TestNestedScopedInclude(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	// Create nested structure: lib/core/mkfile included by lib/mkfile
+	os.MkdirAll(filepath.Join(dir, "lib", "core"), 0o755)
+	os.WriteFile(filepath.Join(dir, "lib", "core", "mkfile"), []byte(`
+name = core-impl
+
+build/core.a: core.o
+    ar rcs $target $input
+`), 0o644)
+	os.WriteFile(filepath.Join(dir, "lib", "core", "core.o"), []byte{}, 0o644)
+
+	os.WriteFile(filepath.Join(dir, "lib", "mkfile"), []byte(`
+include core/mkfile as core
+
+build/libfoo.a: core/build/core.a
+    ar rcs $target $input
+`), 0o644)
+
+	mkfile := `
+include lib/mkfile as lib
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	graph, err := BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Grandchild variable should be scoped as lib.core.name
+	if got := vars.Get("lib.core.name"); got != "core-impl" {
+		t.Errorf("lib.core.name = %q, want %q", got, "core-impl")
+	}
+
+	// Grandchild target should be double-rebased: lib/core/build/core.a
+	rule, err := graph.Resolve("lib/core/build/core.a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.target != "lib/core/build/core.a" {
+		t.Errorf("target = %q, want %q", rule.target, "lib/core/build/core.a")
+	}
+
+	// lib/build/libfoo.a should depend on lib/core/build/core.a
+	libRule, err := graph.Resolve("lib/build/libfoo.a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(libRule.prereqs) != 1 || libRule.prereqs[0] != "lib/core/build/core.a" {
+		t.Errorf("prereqs = %v, want [lib/core/build/core.a]", libRule.prereqs)
+	}
+}
+
+func TestNestedPatternDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	oldDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(oldDir)
+
+	// Root discovers lib/ and app/ via pattern
+	// lib/mkfile discovers lib/core/ and lib/util/ via pattern
+	for _, sub := range []string{"lib/core", "lib/util"} {
+		os.MkdirAll(filepath.Join(dir, sub), 0o755)
+		name := filepath.Base(sub)
+		os.WriteFile(filepath.Join(dir, sub, "mkfile"), []byte(fmt.Sprintf(`
+name = %s
+`, name)), 0o644)
+	}
+
+	os.WriteFile(filepath.Join(dir, "lib", "mkfile"), []byte(`
+include {path}/mkfile as {path}
+`), 0o644)
+
+	os.MkdirAll(filepath.Join(dir, "app"), 0o755)
+	os.WriteFile(filepath.Join(dir, "app", "mkfile"), []byte(`
+name = app
+`), 0o644)
+
+	mkfile := `
+include {path}/mkfile as {path}
+`
+	f, err := Parse(strings.NewReader(mkfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vars := NewVars()
+	state := &BuildState{Targets: make(map[string]*TargetState)}
+	_, err = BuildGraph(f, vars, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Top-level scoped variables
+	if got := vars.Get("app.name"); got != "app" {
+		t.Errorf("app.name = %q, want %q", got, "app")
+	}
+
+	// Nested pattern discovery: lib.core.name and lib.util.name
+	if got := vars.Get("lib.core.name"); got != "core" {
+		t.Errorf("lib.core.name = %q, want %q", got, "core")
+	}
+	if got := vars.Get("lib.util.name"); got != "util" {
+		t.Errorf("lib.util.name = %q, want %q", got, "util")
+	}
+}
+
 func TestWhyStale(t *testing.T) {
 	state := &BuildState{Targets: make(map[string]*TargetState)}
 
