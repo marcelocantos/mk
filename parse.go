@@ -72,10 +72,15 @@ func (p *parser) parseBlock(inConditional bool) ([]Node, error) {
 		}
 		trimmed := strings.TrimSpace(line)
 
-		// Skip empty lines and comments
+		// Skip empty lines and full-line comments
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			p.pos++
 			continue
+		}
+
+		// Strip inline comments
+		if idx := strings.Index(trimmed, " #"); idx >= 0 {
+			trimmed = strings.TrimRight(trimmed[:idx], " \t")
 		}
 
 		// End of conditional block

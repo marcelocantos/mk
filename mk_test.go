@@ -120,6 +120,36 @@ build/{name}.o: src/{name}.c
 	}
 }
 
+func TestInlineComments(t *testing.T) {
+	input := `
+cc = gcc # the compiler
+
+build/app: main.o lib.o # link step
+    $cc -o $target $inputs
+`
+	f, err := Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Variable assignment: comment should be stripped
+	v := f.Stmts[0].(VarAssign)
+	if v.Value != "gcc" {
+		t.Errorf("variable value = %q, want %q", v.Value, "gcc")
+	}
+
+	// Rule: comment should be stripped from prereqs
+	r := f.Stmts[1].(Rule)
+	if len(r.Prereqs) != 2 || r.Prereqs[0] != "main.o" || r.Prereqs[1] != "lib.o" {
+		t.Errorf("prereqs = %v, want [main.o lib.o]", r.Prereqs)
+	}
+
+	// Recipe should still contain the full command (no stripping)
+	if len(r.Recipe) != 1 || r.Recipe[0] != "$cc -o $target $inputs" {
+		t.Errorf("recipe = %v, want [\"$cc -o $target $inputs\"]", r.Recipe)
+	}
+}
+
 func TestParseTask(t *testing.T) {
 	input := `
 !clean:
