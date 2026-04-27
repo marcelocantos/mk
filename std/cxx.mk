@@ -1,6 +1,7 @@
 cxx ?= c++
 cxxflags ?= -Wall
 ldflags ?=
+ccache ?= $[shell command -v ccache 2>/dev/null]
 
 {name}.o: {name}.cc
-    $cxx $cxxflags -c $input -o $target
+    $ccache $cxx $cxxflags -c $input -o $target
